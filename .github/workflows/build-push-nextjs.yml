@@ -1,0 +1,449 @@
+name: Build and Push Next.js App
+
+on:
+  workflow_call:
+    inputs:
+      app_name:
+        description: "Application name (used for tagging and identification)"
+        required: true
+        type: string
+      gcp_project_id:
+        description: "GCP project ID where Artifact Registry lives"
+        required: true
+        type: string
+      gcp_project_number:
+        description: "GCP project number (for WIF provider path)"
+        required: true
+        type: string
+      ar_repository:
+        description: "Artifact Registry repo/image path (e.g. 'coreyalan/coreyalan-web')"
+        required: true
+        type: string
+      node_version:
+        description: "Node.js version"
+        required: false
+        type: string
+        default: "20"
+      pnpm_version:
+        description: "pnpm version"
+        required: false
+        type: string
+        default: "9"
+      dockerfile:
+        description: "Path to Dockerfile"
+        required: false
+        type: string
+        default: "Dockerfile.prebuilt"
+      build_context:
+        description: "Docker build context path"
+        required: false
+        type: string
+        default: "."
+      build_output_paths:
+        description: "Newline-separated paths to upload as build artifacts"
+        required: false
+        type: string
+        default: |
+          .next/standalone/
+          .next/static/
+          public/
+          prisma/
+      pre_build_commands:
+        description: "Commands to run before pnpm build (e.g. 'npx prisma generate')"
+        required: false
+        type: string
+        default: ""
+      build_command:
+        description: "Build command to run"
+        required: false
+        type: string
+        default: "pnpm build"
+      enable_security_scan:
+        description: "Run Trivy security scanning"
+        required: false
+        type: boolean
+        default: true
+      enable_image_cleanup:
+        description: "Clean old images from Artifact Registry"
+        required: false
+        type: boolean
+        default: true
+      images_to_keep:
+        description: "Number of recent images to keep during cleanup"
+        required: false
+        type: number
+        default: 10
+      registry:
+        description: "Artifact Registry hostname"
+        required: false
+        type: string
+        default: "us-central1-docker.pkg.dev"
+      # Override WIF defaults if project uses non-standard naming
+      wif_provider_override:
+        description: "Full WIF provider path (overrides convention)"
+        required: false
+        type: string
+        default: ""
+      wif_sa_override:
+        description: "GCP service account email (overrides convention)"
+        required: false
+        type: string
+        default: ""
+    secrets:
+      bws_access_token:
+        description: "Bitwarden Secrets Manager access token (for build-time secrets)"
+        required: false
+      build_secrets:
+        description: "Bitwarden secret mappings for build-time env vars (bitwarden/sm-action format)"
+        required: false
+
+# Cancel in-progress workflows when a new commit is pushed
+concurrency:
+  group: deploy-${{ inputs.app_name }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # Derive WIF values from convention unless overridden
+  WIF_PROVIDER: ${{ inputs.wif_provider_override != '' && inputs.wif_provider_override || format('projects/{0}/locations/global/workloadIdentityPools/github-pool/providers/github-provider', inputs.gcp_project_number) }}
+  WIF_SA: ${{ inputs.wif_sa_override != '' && inputs.wif_sa_override || format('github-actions@{0}.iam.gserviceaccount.com', inputs.gcp_project_id) }}
+  IMAGE: ${{ inputs.registry }}/${{ inputs.gcp_project_id }}/${{ inputs.ar_repository }}
+
+jobs:
+  # ===========================================================================
+  # Test & Lint
+  # ===========================================================================
+  test:
+    name: Test & Quality
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    # workflow_call inherits the caller's event context
+    if: github.ref == format('refs/heads/{0}', github.event.repository.default_branch) || startsWith(github.ref, 'refs/tags/')
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: ${{ inputs.pnpm_version }}
+          run_install: false
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ inputs.node_version }}
+          cache: pnpm
+
+      - name: Install dependencies
+        run: |
+          max_attempts=3
+          attempt=1
+          while [ $attempt -le $max_attempts ]; do
+            echo "Attempt $attempt of $max_attempts..."
+            if pnpm install --frozen-lockfile --no-optional; then
+              exit 0
+            fi
+            [ $attempt -lt $max_attempts ] && sleep 10
+            attempt=$((attempt + 1))
+          done
+          exit 1
+        env:
+          NPM_CONFIG_REGISTRY: https://registry.npmjs.org/
+
+      - name: Pre-build commands
+        if: inputs.pre_build_commands != ''
+        run: ${{ inputs.pre_build_commands }}
+
+      - name: Lint
+        run: pnpm lint
+        env:
+          NODE_OPTIONS: '--max-old-space-size=4096'
+
+      - name: Test
+        run: pnpm test --passWithNoTests
+        env:
+          NODE_OPTIONS: '--max-old-space-size=4096'
+
+  # ===========================================================================
+  # Security Scan (filesystem)
+  # ===========================================================================
+  security:
+    name: Security Scan
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    if: inputs.enable_security_scan && (github.ref == format('refs/heads/{0}', github.event.repository.default_branch) || startsWith(github.ref, 'refs/tags/'))
+    permissions:
+      actions: read
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: ${{ inputs.pnpm_version }}
+          run_install: false
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ inputs.node_version }}
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile --no-optional || true
+        env:
+          NPM_CONFIG_REGISTRY: https://registry.npmjs.org/
+
+      - name: Security audit
+        run: pnpm audit --audit-level=moderate
+        continue-on-error: true
+
+      - name: Trivy filesystem scan
+        uses: aquasecurity/trivy-action@0.24.0
+        with:
+          scan-type: fs
+          scan-ref: .
+          format: table
+          severity: CRITICAL,HIGH
+          exit-code: "0"
+        continue-on-error: true
+
+      - name: Trivy SARIF report
+        uses: aquasecurity/trivy-action@0.24.0
+        if: always()
+        with:
+          scan-type: fs
+          scan-ref: .
+          format: sarif
+          output: trivy-results.sarif
+          severity: CRITICAL,HIGH
+
+      - name: Upload SARIF results
+        uses: github/codeql-action/upload-sarif@v4
+        if: always() && hashFiles('trivy-results.sarif') != ''
+        with:
+          sarif_file: trivy-results.sarif
+        continue-on-error: true
+
+  # ===========================================================================
+  # Build Application
+  # ===========================================================================
+  build:
+    name: Build
+    runs-on: ubuntu-latest
+    needs: [test, security]
+    if: always() && needs.test.result != 'failure'
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Get build-time secrets from Bitwarden
+        if: secrets.bws_access_token != ''
+        uses: bitwarden/sm-action@v2
+        with:
+          access_token: ${{ secrets.bws_access_token }}
+          secrets: ${{ secrets.build_secrets }}
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: ${{ inputs.pnpm_version }}
+          run_install: false
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ inputs.node_version }}
+          cache: pnpm
+
+      - name: Install dependencies
+        run: |
+          max_attempts=3
+          attempt=1
+          while [ $attempt -le $max_attempts ]; do
+            echo "Attempt $attempt of $max_attempts..."
+            if pnpm install --frozen-lockfile; then
+              exit 0
+            fi
+            [ $attempt -lt $max_attempts ] && sleep 10
+            attempt=$((attempt + 1))
+          done
+          exit 1
+        env:
+          NPM_CONFIG_REGISTRY: https://registry.npmjs.org/
+
+      - name: Pre-build commands
+        if: inputs.pre_build_commands != ''
+        run: ${{ inputs.pre_build_commands }}
+
+      - name: Remove local .env files
+        run: rm -f .env .env.local .env.production .env.production.local .env.development .env.development.local 2>/dev/null || true
+
+      - name: Build
+        run: ${{ inputs.build_command }}
+        env:
+          NODE_OPTIONS: '--max-old-space-size=4096'
+
+      - name: Prepare runtime dependencies
+        run: |
+          if [ -d .next/standalone/node_modules ]; then
+            mkdir -p build-output/runtime-deps
+            cp -r .next/standalone/node_modules build-output/runtime-deps/
+          fi
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: build-output
+          path: ${{ inputs.build_output_paths }}
+          retention-days: 1
+
+  # ===========================================================================
+  # Docker Build, Push & Sign
+  # ===========================================================================
+  docker:
+    name: Docker
+    runs-on: ubuntu-latest
+    needs: build
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      id-token: write
+    outputs:
+      digest: ${{ steps.push.outputs.digest }}
+      image: ${{ env.IMAGE }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: build-output
+          path: build-output
+
+      - id: auth
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ env.WIF_PROVIDER }}
+          service_account: ${{ env.WIF_SA }}
+
+      - uses: google-github-actions/setup-gcloud@v2
+
+      - run: gcloud auth configure-docker ${{ inputs.registry }}
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Determine tags
+        id: tags
+        run: |
+          TAGS="${IMAGE}:${{ github.sha }}"
+          TAGS="${TAGS},${IMAGE}:latest"
+
+          # Add version tag if this is a tag push
+          if [[ "${{ github.ref_type }}" == "tag" ]]; then
+            TAG_NAME="${{ github.ref_name }}"
+            TAGS="${TAGS},${IMAGE}:${TAG_NAME}"
+          fi
+
+          echo "tags=${TAGS}" >> "$GITHUB_OUTPUT"
+
+      - id: push
+        uses: docker/build-push-action@v6
+        with:
+          context: ${{ inputs.build_context }}
+          file: ${{ inputs.dockerfile }}
+          push: true
+          tags: ${{ steps.tags.outputs.tags }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Sign image with Cosign
+        uses: sigstore/cosign-installer@v3
+      - run: cosign sign --yes "${IMAGE}@${{ steps.push.outputs.digest }}"
+
+  # ===========================================================================
+  # Trivy Image Scan
+  # ===========================================================================
+  trivy-image-scan:
+    name: Scan Image
+    runs-on: ubuntu-latest
+    needs: docker
+    if: inputs.enable_security_scan
+    timeout-minutes: 15
+    permissions:
+      security-events: write
+    steps:
+      - name: Trivy image scan
+        uses: aquasecurity/trivy-action@0.24.0
+        with:
+          image-ref: "${{ needs.docker.outputs.image }}@${{ needs.docker.outputs.digest }}"
+          format: table
+          severity: CRITICAL,HIGH
+          exit-code: "0"
+        continue-on-error: true
+
+      - name: Trivy SARIF report
+        uses: aquasecurity/trivy-action@0.24.0
+        if: always()
+        with:
+          image-ref: "${{ needs.docker.outputs.image }}@${{ needs.docker.outputs.digest }}"
+          format: sarif
+          output: trivy-image-results.sarif
+          severity: CRITICAL,HIGH
+
+      - name: Upload SARIF results
+        uses: github/codeql-action/upload-sarif@v4
+        if: always() && hashFiles('trivy-image-results.sarif') != ''
+        with:
+          sarif_file: trivy-image-results.sarif
+        continue-on-error: true
+
+  # ===========================================================================
+  # Cleanup Old Images
+  # ===========================================================================
+  cleanup:
+    name: Cleanup
+    runs-on: ubuntu-latest
+    needs: docker
+    if: inputs.enable_image_cleanup
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - id: auth
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ env.WIF_PROVIDER }}
+          service_account: ${{ env.WIF_SA }}
+
+      - uses: google-github-actions/setup-gcloud@v2
+
+      - name: Delete old images
+        run: |
+          IMAGE_PATH="${{ inputs.registry }}/${{ inputs.gcp_project_id }}/${{ inputs.ar_repository }}"
+          KEEP=${{ inputs.images_to_keep }}
+
+          echo "Listing images in ${IMAGE_PATH}..."
+          DIGESTS=$(gcloud artifacts docker images list "${IMAGE_PATH}" \
+            --sort-by="~UPDATE_TIME" \
+            --format="value(version)" \
+            --include-tags 2>/dev/null || true)
+
+          if [ -z "$DIGESTS" ]; then
+            echo "No images found or unable to list."
+            exit 0
+          fi
+
+          COUNT=0
+          while IFS= read -r digest; do
+            COUNT=$((COUNT + 1))
+            if [ $COUNT -le $KEEP ]; then
+              echo "Keeping: ${digest}"
+            else
+              echo "Deleting: ${digest}"
+              gcloud artifacts docker images delete "${IMAGE_PATH}@${digest}" \
+                --quiet --delete-tags 2>/dev/null || true
+            fi
+          done <<< "$DIGESTS"
+
+          echo "Cleanup complete. Kept ${KEEP} most recent images."

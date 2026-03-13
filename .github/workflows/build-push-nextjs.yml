@@ -240,8 +240,19 @@ jobs:
         with:
           fetch-depth: 1
 
+      - name: Check for Bitwarden token
+        id: bws-check
+        run: |
+          if [ -n "$BWS_TOKEN" ]; then
+            echo "has_token=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_token=false" >> "$GITHUB_OUTPUT"
+          fi
+        env:
+          BWS_TOKEN: ${{ secrets.bws_access_token }}
+
       - name: Get build-time secrets from Bitwarden
-        if: secrets.bws_access_token != ''
+        if: steps.bws-check.outputs.has_token == 'true'
         uses: bitwarden/sm-action@v2
         with:
           access_token: ${{ secrets.bws_access_token }}

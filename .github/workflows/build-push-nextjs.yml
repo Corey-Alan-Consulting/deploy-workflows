@@ -158,7 +158,7 @@ jobs:
           NODE_OPTIONS: '--max-old-space-size=4096'
 
       - name: Test
-        run: pnpm test --passWithNoTests
+        run: pnpm test -- --passWithNoTests
         env:
           NODE_OPTIONS: '--max-old-space-size=4096'
 

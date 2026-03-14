@@ -25,10 +25,10 @@ on:
         type: string
         default: "20"
       pnpm_version:
-        description: "pnpm version"
+        description: "pnpm version (leave empty to read from package.json packageManager field)"
         required: false
         type: string
-        default: "9"
+        default: ""
       dockerfile:
         description: "Path to Dockerfile"
         required: false
@@ -125,7 +125,6 @@ jobs:
 
       - uses: pnpm/action-setup@v4
         with:
-          version: ${{ inputs.pnpm_version }}
           run_install: false
 
       - uses: actions/setup-node@v4
@@ -182,7 +181,6 @@ jobs:
 
       - uses: pnpm/action-setup@v4
         with:
-          version: ${{ inputs.pnpm_version }}
           run_install: false
 
       - uses: actions/setup-node@v4
@@ -260,7 +258,6 @@ jobs:
 
       - uses: pnpm/action-setup@v4
         with:
-          version: ${{ inputs.pnpm_version }}
           run_install: false
 
       - uses: actions/setup-node@v4

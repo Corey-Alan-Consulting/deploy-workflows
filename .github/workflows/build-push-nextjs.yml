@@ -378,8 +378,20 @@ jobs:
     if: inputs.enable_security_scan
     timeout-minutes: 15
     permissions:
+      contents: read
+      id-token: write
       security-events: write
     steps:
+      - id: auth
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ env.WIF_PROVIDER }}
+          service_account: ${{ env.WIF_SA }}
+
+      - uses: google-github-actions/setup-gcloud@v2
+
+      - run: gcloud auth configure-docker ${{ inputs.registry }}
+
       - name: Trivy image scan
         uses: aquasecurity/trivy-action@0.24.0
         with:

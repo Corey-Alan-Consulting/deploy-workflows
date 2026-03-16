@@ -304,6 +304,7 @@ jobs:
         with:
           name: build-output
           path: ${{ inputs.build_output_paths }}
+          include-hidden-files: true
           retention-days: 1
 
   # ===========================================================================

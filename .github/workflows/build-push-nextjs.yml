@@ -138,7 +138,7 @@ jobs:
           attempt=1
           while [ $attempt -le $max_attempts ]; do
             echo "Attempt $attempt of $max_attempts..."
-            if pnpm install --frozen-lockfile --no-optional; then
+            if pnpm install --frozen-lockfile; then
               exit 0
             fi
             [ $attempt -lt $max_attempts ] && sleep 10
@@ -189,7 +189,7 @@ jobs:
           cache: pnpm
 
       - name: Install dependencies
-        run: pnpm install --frozen-lockfile --no-optional || true
+        run: pnpm install --frozen-lockfile || true
         env:
           NPM_CONFIG_REGISTRY: https://registry.npmjs.org/
 

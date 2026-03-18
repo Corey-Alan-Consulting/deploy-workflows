@@ -24,8 +24,13 @@ on:
         required: false
         type: string
         default: "20"
+      package_manager:
+        description: "Package manager: pnpm, npm, or yarn"
+        required: false
+        type: string
+        default: "pnpm"
       pnpm_version:
-        description: "pnpm version (leave empty to read from package.json packageManager field)"
+        description: "pnpm version (only used when package_manager is pnpm; leave empty to read from package.json)"
         required: false
         type: string
         default: ""
@@ -39,8 +44,13 @@ on:
         required: false
         type: string
         default: "."
+      build_mode:
+        description: "Build mode: 'prebuilt' (build on runner, Docker copies artifacts) or 'dockerfile' (self-contained multi-stage Docker build)"
+        required: false
+        type: string
+        default: "prebuilt"
       build_output_paths:
-        description: "Newline-separated paths to upload as build artifacts"
+        description: "Newline-separated paths to upload as build artifacts (prebuilt mode only)"
         required: false
         type: string
         default: |
@@ -48,16 +58,46 @@ on:
           .next/static/
           public/
           prisma/
+      preserve_artifact_paths:
+        description: "Preserve full directory structure in build artifacts (prevents common prefix stripping by upload-artifact)"
+        required: false
+        type: boolean
+        default: false
       pre_build_commands:
-        description: "Commands to run before pnpm build (e.g. 'npx prisma generate')"
+        description: "Commands to run before build (e.g. 'npx prisma generate')"
         required: false
         type: string
         default: ""
       build_command:
-        description: "Build command to run"
+        description: "Override build command (empty = auto from package_manager)"
         required: false
         type: string
-        default: "pnpm build"
+        default: ""
+      install_command:
+        description: "Override install command (empty = auto from package_manager, 'skip' to skip)"
+        required: false
+        type: string
+        default: ""
+      lint_command:
+        description: "Override lint command (empty = auto from package_manager, 'skip' to skip)"
+        required: false
+        type: string
+        default: ""
+      test_command:
+        description: "Override test command (empty = auto from package_manager, 'skip' to skip)"
+        required: false
+        type: string
+        default: ""
+      enable_lint:
+        description: "Run linting in the Test & Quality job"
+        required: false
+        type: boolean
+        default: true
+      enable_test:
+        description: "Run tests in the Test & Quality job"
+        required: false
+        type: boolean
+        default: true
       enable_security_scan:
         description: "Run Trivy security scanning"
         required: false
@@ -116,49 +156,100 @@ jobs:
     name: Test & Quality
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    # workflow_call inherits the caller's event context
-    if: github.ref == format('refs/heads/{0}', github.event.repository.default_branch) || startsWith(github.ref, 'refs/tags/')
+    if: >-
+      (inputs.enable_test || inputs.enable_lint) &&
+      (github.ref == format('refs/heads/{0}', github.event.repository.default_branch) || startsWith(github.ref, 'refs/tags/'))
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 1
 
+      - name: Resolve package manager commands
+        id: pm
+        env:
+          PM: ${{ inputs.package_manager }}
+          INPUT_INSTALL: ${{ inputs.install_command }}
+          INPUT_LINT: ${{ inputs.lint_command }}
+          INPUT_TEST: ${{ inputs.test_command }}
+        run: |
+          # Install command
+          if [ "$INPUT_INSTALL" = "skip" ]; then
+            echo "install_cmd=skip" >> "$GITHUB_OUTPUT"
+          elif [ -n "$INPUT_INSTALL" ]; then
+            echo "install_cmd=$INPUT_INSTALL" >> "$GITHUB_OUTPUT"
+          else
+            case "$PM" in
+              npm)  echo "install_cmd=npm ci" >> "$GITHUB_OUTPUT" ;;
+              yarn) echo "install_cmd=yarn install --frozen-lockfile" >> "$GITHUB_OUTPUT" ;;
+              *)    echo "install_cmd=pnpm install --frozen-lockfile" >> "$GITHUB_OUTPUT" ;;
+            esac
+          fi
+          # Lint command
+          if [ "$INPUT_LINT" = "skip" ]; then
+            echo "lint_cmd=skip" >> "$GITHUB_OUTPUT"
+          elif [ -n "$INPUT_LINT" ]; then
+            echo "lint_cmd=$INPUT_LINT" >> "$GITHUB_OUTPUT"
+          else
+            case "$PM" in
+              npm)  echo "lint_cmd=npm run lint" >> "$GITHUB_OUTPUT" ;;
+              yarn) echo "lint_cmd=yarn lint" >> "$GITHUB_OUTPUT" ;;
+              *)    echo "lint_cmd=pnpm lint" >> "$GITHUB_OUTPUT" ;;
+            esac
+          fi
+          # Test command
+          if [ "$INPUT_TEST" = "skip" ]; then
+            echo "test_cmd=skip" >> "$GITHUB_OUTPUT"
+          elif [ -n "$INPUT_TEST" ]; then
+            echo "test_cmd=$INPUT_TEST" >> "$GITHUB_OUTPUT"
+          else
+            case "$PM" in
+              npm)  echo "test_cmd=npm test -- --passWithNoTests" >> "$GITHUB_OUTPUT" ;;
+              yarn) echo "test_cmd=yarn test --passWithNoTests" >> "$GITHUB_OUTPUT" ;;
+              *)    echo "test_cmd=pnpm test -- --passWithNoTests" >> "$GITHUB_OUTPUT" ;;
+            esac
+          fi
+
       - uses: pnpm/action-setup@v4
+        if: inputs.package_manager == 'pnpm'
         with:
           run_install: false
 
       - uses: actions/setup-node@v4
         with:
           node-version: ${{ inputs.node_version }}
-          cache: pnpm
+          cache: ${{ inputs.package_manager }}
 
       - name: Install dependencies
+        if: steps.pm.outputs.install_cmd != 'skip'
+        env:
+          INSTALL_CMD: ${{ steps.pm.outputs.install_cmd }}
+          NPM_CONFIG_REGISTRY: https://registry.npmjs.org/
         run: |
           max_attempts=3
           attempt=1
           while [ $attempt -le $max_attempts ]; do
             echo "Attempt $attempt of $max_attempts..."
-            if pnpm install --frozen-lockfile; then
+            if eval "$INSTALL_CMD"; then
               exit 0
             fi
             [ $attempt -lt $max_attempts ] && sleep 10
             attempt=$((attempt + 1))
           done
           exit 1
-        env:
-          NPM_CONFIG_REGISTRY: https://registry.npmjs.org/
 
       - name: Pre-build commands
         if: inputs.pre_build_commands != ''
         run: ${{ inputs.pre_build_commands }}
 
       - name: Lint
-        run: pnpm lint
+        if: inputs.enable_lint && steps.pm.outputs.lint_cmd != 'skip'
+        run: ${{ steps.pm.outputs.lint_cmd }}
         env:
           NODE_OPTIONS: '--max-old-space-size=4096'
 
       - name: Test
-        run: pnpm test -- --passWithNoTests
+        if: inputs.enable_test && steps.pm.outputs.test_cmd != 'skip'
+        run: ${{ steps.pm.outputs.test_cmd }}
         env:
           NODE_OPTIONS: '--max-old-space-size=4096'
 
@@ -179,22 +270,47 @@ jobs:
         with:
           fetch-depth: 1
 
+      - name: Resolve package manager commands
+        id: pm
+        env:
+          PM: ${{ inputs.package_manager }}
+          INPUT_INSTALL: ${{ inputs.install_command }}
+        run: |
+          if [ "$INPUT_INSTALL" = "skip" ]; then
+            echo "install_cmd=skip" >> "$GITHUB_OUTPUT"
+          elif [ -n "$INPUT_INSTALL" ]; then
+            echo "install_cmd=$INPUT_INSTALL" >> "$GITHUB_OUTPUT"
+          else
+            case "$PM" in
+              npm)  echo "install_cmd=npm ci" >> "$GITHUB_OUTPUT" ;;
+              yarn) echo "install_cmd=yarn install --frozen-lockfile" >> "$GITHUB_OUTPUT" ;;
+              *)    echo "install_cmd=pnpm install --frozen-lockfile" >> "$GITHUB_OUTPUT" ;;
+            esac
+          fi
+          case "$PM" in
+            npm)  echo "audit_cmd=npm audit --audit-level=moderate" >> "$GITHUB_OUTPUT" ;;
+            yarn) echo "audit_cmd=yarn audit --level moderate" >> "$GITHUB_OUTPUT" ;;
+            *)    echo "audit_cmd=pnpm audit --audit-level=moderate" >> "$GITHUB_OUTPUT" ;;
+          esac
+
       - uses: pnpm/action-setup@v4
+        if: inputs.package_manager == 'pnpm'
         with:
           run_install: false
 
       - uses: actions/setup-node@v4
         with:
           node-version: ${{ inputs.node_version }}
-          cache: pnpm
+          cache: ${{ inputs.package_manager }}
 
       - name: Install dependencies
-        run: pnpm install --frozen-lockfile || true
+        if: steps.pm.outputs.install_cmd != 'skip'
+        run: ${{ steps.pm.outputs.install_cmd }} || true
         env:
           NPM_CONFIG_REGISTRY: https://registry.npmjs.org/
 
       - name: Security audit
-        run: pnpm audit --audit-level=moderate
+        run: ${{ steps.pm.outputs.audit_cmd }}
         continue-on-error: true
 
       - name: Trivy filesystem scan
@@ -225,13 +341,13 @@ jobs:
         continue-on-error: true
 
   # ===========================================================================
-  # Build Application
+  # Build Application (prebuilt mode only)
   # ===========================================================================
   build:
     name: Build
     runs-on: ubuntu-latest
     needs: [test, security]
-    if: always() && needs.test.result != 'failure'
+    if: always() && needs.test.result != 'failure' && inputs.build_mode == 'prebuilt'
     timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
@@ -256,30 +372,63 @@ jobs:
           access_token: ${{ secrets.bws_access_token }}
           secrets: ${{ secrets.build_secrets }}
 
+      - name: Resolve package manager commands
+        id: pm
+        env:
+          PM: ${{ inputs.package_manager }}
+          INPUT_INSTALL: ${{ inputs.install_command }}
+          INPUT_BUILD: ${{ inputs.build_command }}
+        run: |
+          # Install command
+          if [ "$INPUT_INSTALL" = "skip" ]; then
+            echo "install_cmd=skip" >> "$GITHUB_OUTPUT"
+          elif [ -n "$INPUT_INSTALL" ]; then
+            echo "install_cmd=$INPUT_INSTALL" >> "$GITHUB_OUTPUT"
+          else
+            case "$PM" in
+              npm)  echo "install_cmd=npm ci" >> "$GITHUB_OUTPUT" ;;
+              yarn) echo "install_cmd=yarn install --frozen-lockfile" >> "$GITHUB_OUTPUT" ;;
+              *)    echo "install_cmd=pnpm install --frozen-lockfile" >> "$GITHUB_OUTPUT" ;;
+            esac
+          fi
+          # Build command
+          if [ -n "$INPUT_BUILD" ]; then
+            echo "build_cmd=$INPUT_BUILD" >> "$GITHUB_OUTPUT"
+          else
+            case "$PM" in
+              npm)  echo "build_cmd=npm run build" >> "$GITHUB_OUTPUT" ;;
+              yarn) echo "build_cmd=yarn build" >> "$GITHUB_OUTPUT" ;;
+              *)    echo "build_cmd=pnpm build" >> "$GITHUB_OUTPUT" ;;
+            esac
+          fi
+
       - uses: pnpm/action-setup@v4
+        if: inputs.package_manager == 'pnpm'
         with:
           run_install: false
 
       - uses: actions/setup-node@v4
         with:
           node-version: ${{ inputs.node_version }}
-          cache: pnpm
+          cache: ${{ inputs.package_manager }}
 
       - name: Install dependencies
+        if: steps.pm.outputs.install_cmd != 'skip'
+        env:
+          INSTALL_CMD: ${{ steps.pm.outputs.install_cmd }}
+          NPM_CONFIG_REGISTRY: https://registry.npmjs.org/
         run: |
           max_attempts=3
           attempt=1
           while [ $attempt -le $max_attempts ]; do
             echo "Attempt $attempt of $max_attempts..."
-            if pnpm install --frozen-lockfile; then
+            if eval "$INSTALL_CMD"; then
               exit 0
             fi
             [ $attempt -lt $max_attempts ] && sleep 10
             attempt=$((attempt + 1))
           done
           exit 1
-        env:
-          NPM_CONFIG_REGISTRY: https://registry.npmjs.org/
 
       - name: Pre-build commands
         if: inputs.pre_build_commands != ''
@@ -289,18 +438,38 @@ jobs:
         run: rm -f .env .env.local .env.production .env.production.local .env.development .env.development.local 2>/dev/null || true
 
       - name: Build
-        run: ${{ inputs.build_command }}
+        run: ${{ steps.pm.outputs.build_cmd }}
         env:
           NODE_OPTIONS: '--max-old-space-size=4096'
 
-      - name: Prepare runtime dependencies
+      - name: Stage build artifacts
+        if: inputs.preserve_artifact_paths
         run: |
-          if [ -d .next/standalone/node_modules ]; then
-            mkdir -p build-output/runtime-deps
-            cp -r .next/standalone/node_modules build-output/runtime-deps/
-          fi
+          mkdir -p staged-output
+          while IFS= read -r path; do
+            path="$(echo "$path" | xargs)"
+            [ -z "$path" ] && continue
+            path="${path%/}"
+            if [ -e "$path" ]; then
+              dest="staged-output/${path}"
+              mkdir -p "$(dirname "$dest")"
+              cp -r "$path" "$dest"
+              echo "Staged: $path -> $dest"
+            else
+              echo "Warning: $path does not exist, skipping"
+            fi
+          done <<< "${{ inputs.build_output_paths }}"
 
       - uses: actions/upload-artifact@v4
+        if: inputs.preserve_artifact_paths
+        with:
+          name: build-output
+          path: staged-output/
+          include-hidden-files: true
+          retention-days: 1
+
+      - uses: actions/upload-artifact@v4
+        if: ${{ !inputs.preserve_artifact_paths }}
         with:
           name: build-output
           path: ${{ inputs.build_output_paths }}
@@ -314,6 +483,7 @@ jobs:
     name: Docker
     runs-on: ubuntu-latest
     needs: build
+    if: always() && needs.build.result != 'failure'
     timeout-minutes: 20
     permissions:
       contents: read
@@ -325,6 +495,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - uses: actions/download-artifact@v4
+        if: inputs.build_mode == 'prebuilt'
         with:
           name: build-output
           path: build-output

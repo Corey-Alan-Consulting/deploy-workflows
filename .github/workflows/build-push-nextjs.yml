@@ -550,6 +550,7 @@ jobs:
     if: inputs.enable_security_scan
     timeout-minutes: 15
     permissions:
+      actions: read
       contents: read
       id-token: write
       security-events: write

@@ -129,6 +129,22 @@ on:
         required: false
         type: string
         default: ""
+      # Migration image (optional - for apps with database migrations)
+      build_migration_image:
+        description: "Build a lightweight migration image alongside the app image"
+        required: false
+        type: boolean
+        default: false
+      migration_dockerfile:
+        description: "Path to migration Dockerfile"
+        required: false
+        type: string
+        default: "Dockerfile.migrate"
+      migration_ar_repository:
+        description: "AR repo/image path for migration image (e.g. 'dispatchr-social/dispatchr-web-migrate')"
+        required: false
+        type: string
+        default: ""
     secrets:
       bws_access_token:
         description: "Bitwarden Secrets Manager access token (for build-time secrets)"
@@ -147,6 +163,7 @@ env:
   WIF_PROVIDER: ${{ inputs.wif_provider_override != '' && inputs.wif_provider_override || format('projects/{0}/locations/global/workloadIdentityPools/github-pool/providers/github-provider', inputs.gcp_project_number) }}
   WIF_SA: ${{ inputs.wif_sa_override != '' && inputs.wif_sa_override || format('github-actions@{0}.iam.gserviceaccount.com', inputs.gcp_project_id) }}
   IMAGE: ${{ inputs.registry }}/${{ inputs.gcp_project_id }}/${{ inputs.ar_repository }}
+  MIGRATE_IMAGE: ${{ inputs.migration_ar_repository != '' && format('{0}/{1}/{2}', inputs.registry, inputs.gcp_project_id, inputs.migration_ar_repository) || '' }}
 
 jobs:
   # ===========================================================================
@@ -539,6 +556,67 @@ jobs:
       - name: Sign image with Cosign
         uses: sigstore/cosign-installer@v3
       - run: cosign sign --yes "${IMAGE}@${{ steps.push.outputs.digest }}"
+
+  # ===========================================================================
+  # Migration Image (optional - for apps with database migrations)
+  # ===========================================================================
+  migration:
+    name: Migration Image
+    runs-on: ubuntu-latest
+    needs: docker
+    if: inputs.build_migration_image && inputs.migration_ar_repository != ''
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      id-token: write
+    outputs:
+      digest: ${{ steps.push.outputs.digest }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - id: auth
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ env.WIF_PROVIDER }}
+          service_account: ${{ env.WIF_SA }}
+
+      - uses: google-github-actions/setup-gcloud@v2
+
+      - run: gcloud auth configure-docker ${{ inputs.registry }}
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Determine tags
+        id: tags
+        env:
+          SHA: ${{ github.sha }}
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          TAGS="${MIGRATE_IMAGE}:${SHA}"
+          TAGS="${TAGS},${MIGRATE_IMAGE}:latest"
+
+          if [[ "$REF_TYPE" == "tag" ]]; then
+            TAGS="${TAGS},${MIGRATE_IMAGE}:${REF_NAME}"
+          fi
+
+          echo "tags=${TAGS}" >> "$GITHUB_OUTPUT"
+
+      - id: push
+        uses: docker/build-push-action@v6
+        with:
+          context: ${{ inputs.build_context }}
+          file: ${{ inputs.migration_dockerfile }}
+          push: true
+          tags: ${{ steps.tags.outputs.tags }}
+          cache-from: type=gha,scope=migration
+          cache-to: type=gha,mode=max,scope=migration
+
+      - name: Sign migration image with Cosign
+        uses: sigstore/cosign-installer@v3
+      - env:
+          DIGEST: ${{ steps.push.outputs.digest }}
+        run: cosign sign --yes "${MIGRATE_IMAGE}@${DIGEST}"
 
   # ===========================================================================
   # Trivy Image Scan

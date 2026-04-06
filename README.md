@@ -230,13 +230,13 @@ jobs:
   deploy:
     uses: Corey-Alan-Consulting/deploy-workflows/.github/workflows/build-push-nextjs.yml@main
     with:
-      app_name: smm-web
-      gcp_project_id: coreyalan-smm
+      app_name: dispatchr-web
+      gcp_project_id: dispatchr-social
       gcp_project_number: "949337891045"
-      ar_repository: coreyalan-smm/smm-web
+      ar_repository: dispatchr-social/dispatchr-web
       dockerfile: apps/web/Dockerfile.prebuilt
-      build_command: "pnpm --filter @smm/web build"
-      pre_build_commands: "pnpm --filter @smm/db db:generate && pnpm --filter @smm/db build && pnpm --filter @smm/shared build && pnpm --filter @smm/core build"
+      build_command: "pnpm --filter @dispatchr/web build"
+      pre_build_commands: "pnpm --filter @dispatchr/db db:generate && pnpm --filter @dispatchr/db build && pnpm --filter @dispatchr/shared build && pnpm --filter @dispatchr/core build"
       preserve_artifact_paths: true
       build_output_paths: |
         apps/web/.next/standalone/

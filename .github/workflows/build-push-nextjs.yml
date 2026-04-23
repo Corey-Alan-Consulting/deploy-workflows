@@ -145,6 +145,16 @@ on:
         required: false
         type: string
         default: ""
+    outputs:
+      digest:
+        description: "App image digest (sha256:...)"
+        value: ${{ jobs.docker.outputs.digest }}
+      image:
+        description: "Full app image reference (without digest)"
+        value: ${{ jobs.docker.outputs.image }}
+      migrate_digest:
+        description: "Migration image digest (sha256:...), empty if not built"
+        value: ${{ jobs.migration.outputs.digest }}
     secrets:
       bws_access_token:
         description: "Bitwarden Secrets Manager access token (for build-time secrets)"

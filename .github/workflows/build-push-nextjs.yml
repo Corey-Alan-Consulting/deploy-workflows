@@ -509,8 +509,14 @@ jobs:
   docker:
     name: Docker
     runs-on: ubuntu-latest
-    needs: build
-    if: always() && needs.build.result != 'failure'
+    # `migration` is intentionally upstream of `docker` so its image is in
+    # Artifact Registry before the app image's push notification fires.
+    # The gitops-trigger Cloud Run service resolves the matching
+    # `*-migrate` digest synchronously when the app push event arrives;
+    # ordering it the other way leaves a sub-minute window where the HEAD
+    # 404s and the migrate digest never makes it into values.yaml.
+    needs: [build, migration]
+    if: always() && needs.build.result != 'failure' && needs.migration.result != 'failure'
     timeout-minutes: 20
     permissions:
       contents: read
@@ -573,8 +579,8 @@ jobs:
   migration:
     name: Migration Image
     runs-on: ubuntu-latest
-    needs: docker
-    if: inputs.build_migration_image && inputs.migration_ar_repository != ''
+    needs: build
+    if: inputs.build_migration_image && inputs.migration_ar_repository != '' && needs.build.result != 'failure'
     timeout-minutes: 10
     permissions:
       contents: read

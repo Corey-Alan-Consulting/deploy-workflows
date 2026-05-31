@@ -641,7 +641,7 @@ jobs:
     name: Scan Image
     runs-on: ubuntu-latest
     needs: docker
-    if: inputs.enable_security_scan
+    if: always() && needs.docker.result == 'success' && inputs.enable_security_scan
     timeout-minutes: 15
     permissions:
       actions: read
@@ -691,7 +691,7 @@ jobs:
     name: Cleanup
     runs-on: ubuntu-latest
     needs: docker
-    if: inputs.enable_image_cleanup
+    if: always() && needs.docker.result == 'success' && inputs.enable_image_cleanup
     timeout-minutes: 10
     permissions:
       contents: read

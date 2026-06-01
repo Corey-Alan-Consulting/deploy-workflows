@@ -232,7 +232,7 @@ jobs:
             case "$PM" in
               npm)  echo "test_cmd=npm test -- --passWithNoTests" >> "$GITHUB_OUTPUT" ;;
               yarn) echo "test_cmd=yarn test --passWithNoTests" >> "$GITHUB_OUTPUT" ;;
-              *)    echo "test_cmd=pnpm test -- --passWithNoTests" >> "$GITHUB_OUTPUT" ;;
+              *)    echo "test_cmd=pnpm test --passWithNoTests" >> "$GITHUB_OUTPUT" ;;
             esac
           fi
 

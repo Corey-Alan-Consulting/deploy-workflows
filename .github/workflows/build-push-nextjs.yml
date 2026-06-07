@@ -203,6 +203,12 @@ jobs:
     if: >-
       (inputs.enable_test || inputs.enable_lint) &&
       (github.ref == format('refs/heads/{0}', github.event.repository.default_branch) || startsWith(github.ref, 'refs/tags/'))
+    # Expose GH App secrets as env so step `if:` conditions can gate on them.
+    # The `secrets` context is not accessible in step-level `if:` expressions
+    # in reusable workflows — only job-level env is.
+    env:
+      GH_APP_ID: ${{ secrets.gh_app_id }}
+      GH_APP_PRIVATE_KEY: ${{ secrets.gh_app_private_key }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -269,11 +275,11 @@ jobs:
       # are masked in logs but stay readable for downstream steps.
       - name: Mint GitHub Packages installation token
         id: gh-app-token
-        if: ${{ secrets.gh_app_id != '' }}
+        if: env.GH_APP_ID != ''
         uses: actions/create-github-app-token@v2
         with:
-          app-id: ${{ secrets.gh_app_id }}
-          private-key: ${{ secrets.gh_app_private_key }}
+          app-id: ${{ env.GH_APP_ID }}
+          private-key: ${{ env.GH_APP_PRIVATE_KEY }}
           owner: ${{ github.repository_owner }}
 
       - name: Install dependencies
@@ -339,6 +345,9 @@ jobs:
       actions: read
       contents: read
       security-events: write
+    env:
+      GH_APP_ID: ${{ secrets.gh_app_id }}
+      GH_APP_PRIVATE_KEY: ${{ secrets.gh_app_private_key }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -379,11 +388,11 @@ jobs:
 
       - name: Mint GitHub Packages installation token
         id: gh-app-token
-        if: ${{ secrets.gh_app_id != '' }}
+        if: env.GH_APP_ID != ''
         uses: actions/create-github-app-token@v2
         with:
-          app-id: ${{ secrets.gh_app_id }}
-          private-key: ${{ secrets.gh_app_private_key }}
+          app-id: ${{ env.GH_APP_ID }}
+          private-key: ${{ env.GH_APP_PRIVATE_KEY }}
           owner: ${{ github.repository_owner }}
 
       - name: Install dependencies
@@ -440,6 +449,9 @@ jobs:
     needs: [test, security]
     if: always() && needs.test.result != 'failure' && inputs.build_mode == 'prebuilt'
     timeout-minutes: 25
+    env:
+      GH_APP_ID: ${{ secrets.gh_app_id }}
+      GH_APP_PRIVATE_KEY: ${{ secrets.gh_app_private_key }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -509,11 +521,11 @@ jobs:
       # are masked in logs but stay readable for downstream steps.
       - name: Mint GitHub Packages installation token
         id: gh-app-token
-        if: ${{ secrets.gh_app_id != '' }}
+        if: env.GH_APP_ID != ''
         uses: actions/create-github-app-token@v2
         with:
-          app-id: ${{ secrets.gh_app_id }}
-          private-key: ${{ secrets.gh_app_private_key }}
+          app-id: ${{ env.GH_APP_ID }}
+          private-key: ${{ env.GH_APP_PRIVATE_KEY }}
           owner: ${{ github.repository_owner }}
 
       - name: Install dependencies

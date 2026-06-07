@@ -275,7 +275,15 @@ jobs:
           # when crossing job boundaries — add-mask makes the boundary safe.
           if [ -n "${TOKEN}" ]; then
             echo "::add-mask::${TOKEN}"
+            echo "GH Packages token present (${#TOKEN} chars), writing auth lines"
+            # Write to both project .npmrc (highest pnpm precedence) and
+            # ~/.npmrc (fallback). Project .npmrc may already pin the
+            # @corey-alan-consulting scope to GitHub Packages but lack the
+            # _authToken line — appending here keeps the token out of git.
+            echo "//npm.pkg.github.com/:_authToken=${TOKEN}" >> .npmrc
             echo "//npm.pkg.github.com/:_authToken=${TOKEN}" >> "${HOME}/.npmrc"
+          else
+            echo "WARNING: npm_auth_token secret is empty — install will lack GH Packages auth"
           fi
           max_attempts=3
           attempt=1
@@ -364,7 +372,15 @@ jobs:
         run: |
           if [ -n "${TOKEN}" ]; then
             echo "::add-mask::${TOKEN}"
+            echo "GH Packages token present (${#TOKEN} chars), writing auth lines"
+            # Write to both project .npmrc (highest pnpm precedence) and
+            # ~/.npmrc (fallback). Project .npmrc may already pin the
+            # @corey-alan-consulting scope to GitHub Packages but lack the
+            # _authToken line — appending here keeps the token out of git.
+            echo "//npm.pkg.github.com/:_authToken=${TOKEN}" >> .npmrc
             echo "//npm.pkg.github.com/:_authToken=${TOKEN}" >> "${HOME}/.npmrc"
+          else
+            echo "WARNING: npm_auth_token secret is empty — install will lack GH Packages auth"
           fi
           eval "$INSTALL_CMD" || true
 
@@ -490,7 +506,15 @@ jobs:
           # when crossing job boundaries — add-mask makes the boundary safe.
           if [ -n "${TOKEN}" ]; then
             echo "::add-mask::${TOKEN}"
+            echo "GH Packages token present (${#TOKEN} chars), writing auth lines"
+            # Write to both project .npmrc (highest pnpm precedence) and
+            # ~/.npmrc (fallback). Project .npmrc may already pin the
+            # @corey-alan-consulting scope to GitHub Packages but lack the
+            # _authToken line — appending here keeps the token out of git.
+            echo "//npm.pkg.github.com/:_authToken=${TOKEN}" >> .npmrc
             echo "//npm.pkg.github.com/:_authToken=${TOKEN}" >> "${HOME}/.npmrc"
+          else
+            echo "WARNING: npm_auth_token secret is empty — install will lack GH Packages auth"
           fi
           max_attempts=3
           attempt=1

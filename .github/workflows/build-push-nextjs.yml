@@ -162,6 +162,16 @@ on:
       build_secrets:
         description: "Bitwarden secret mappings for build-time env vars (bitwarden/sm-action format)"
         required: false
+      npm_auth_token:
+        description: |
+          Optional auth token for the @corey-alan-consulting scope on GitHub
+          Packages. When provided, the install + build steps export it as
+          `NPM_CONFIG_//npm.pkg.github.com/:_authToken` so pnpm/npm can resolve
+          private partner packages (e.g. @corey-alan-consulting/v1-sdk).
+          Generate at the caller side with actions/create-github-app-token@v1
+          using the GitOps App — its `packages:read` permission is the
+          recommended source so no long-lived PAT is required.
+        required: false
 
 # Cancel in-progress workflows when a new commit is pushed
 concurrency:
@@ -251,12 +261,25 @@ jobs:
         env:
           INSTALL_CMD: ${{ steps.pm.outputs.install_cmd }}
           NPM_CONFIG_REGISTRY: https://registry.npmjs.org/
+          # Optional GH Packages auth for the @corey-alan-consulting scope.
+          # The env var name contains slashes (npm-config wire format), which
+          # bash variable assignment can't represent — `env "K=V"` passes it
+          # through verbatim to the install child process where pnpm reads it.
+          # Empty TOKEN is fine: pnpm only needs auth when resolving a scoped
+          # dep that's actually in the dep tree.
+          TOKEN: ${{ secrets.npm_auth_token }}
         run: |
+          # Mask the token in logs. Inherited job outputs (e.g. an App token
+          # minted in a prior job) aren't auto-masked the way `secrets.X` is
+          # when crossing job boundaries — add-mask makes the boundary safe.
+          if [ -n "${TOKEN}" ]; then
+            echo "::add-mask::${TOKEN}"
+          fi
           max_attempts=3
           attempt=1
           while [ $attempt -le $max_attempts ]; do
             echo "Attempt $attempt of $max_attempts..."
-            if eval "$INSTALL_CMD"; then
+            if env "NPM_CONFIG_//npm.pkg.github.com/:_authToken=${TOKEN}" sh -c "$INSTALL_CMD"; then
               exit 0
             fi
             [ $attempt -lt $max_attempts ] && sleep 10
@@ -332,9 +355,15 @@ jobs:
 
       - name: Install dependencies
         if: steps.pm.outputs.install_cmd != 'skip'
-        run: ${{ steps.pm.outputs.install_cmd }} || true
         env:
+          INSTALL_CMD: ${{ steps.pm.outputs.install_cmd }}
           NPM_CONFIG_REGISTRY: https://registry.npmjs.org/
+          TOKEN: ${{ secrets.npm_auth_token }}
+        run: |
+          if [ -n "${TOKEN}" ]; then
+            echo "::add-mask::${TOKEN}"
+          fi
+          env "NPM_CONFIG_//npm.pkg.github.com/:_authToken=${TOKEN}" sh -c "$INSTALL_CMD" || true
 
       - name: Security audit
         run: ${{ steps.pm.outputs.audit_cmd }}
@@ -444,12 +473,25 @@ jobs:
         env:
           INSTALL_CMD: ${{ steps.pm.outputs.install_cmd }}
           NPM_CONFIG_REGISTRY: https://registry.npmjs.org/
+          # Optional GH Packages auth for the @corey-alan-consulting scope.
+          # The env var name contains slashes (npm-config wire format), which
+          # bash variable assignment can't represent — `env "K=V"` passes it
+          # through verbatim to the install child process where pnpm reads it.
+          # Empty TOKEN is fine: pnpm only needs auth when resolving a scoped
+          # dep that's actually in the dep tree.
+          TOKEN: ${{ secrets.npm_auth_token }}
         run: |
+          # Mask the token in logs. Inherited job outputs (e.g. an App token
+          # minted in a prior job) aren't auto-masked the way `secrets.X` is
+          # when crossing job boundaries — add-mask makes the boundary safe.
+          if [ -n "${TOKEN}" ]; then
+            echo "::add-mask::${TOKEN}"
+          fi
           max_attempts=3
           attempt=1
           while [ $attempt -le $max_attempts ]; do
             echo "Attempt $attempt of $max_attempts..."
-            if eval "$INSTALL_CMD"; then
+            if env "NPM_CONFIG_//npm.pkg.github.com/:_authToken=${TOKEN}" sh -c "$INSTALL_CMD"; then
               exit 0
             fi
             [ $attempt -lt $max_attempts ] && sleep 10

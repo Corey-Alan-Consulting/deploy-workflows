@@ -162,15 +162,22 @@ on:
       build_secrets:
         description: "Bitwarden secret mappings for build-time env vars (bitwarden/sm-action format)"
         required: false
-      npm_auth_token:
+      gh_app_id:
         description: |
-          Optional auth token for the @corey-alan-consulting scope on GitHub
-          Packages. When provided, the install + build steps export it as
-          `NPM_CONFIG_//npm.pkg.github.com/:_authToken` so pnpm/npm can resolve
-          private partner packages (e.g. @corey-alan-consulting/v1-sdk).
-          Generate at the caller side with actions/create-github-app-token@v1
-          using the GitOps App — its `packages:read` permission is the
-          recommended source so no long-lived PAT is required.
+          GitHub App ID used to mint installation tokens for GitHub Packages
+          authentication. Paired with gh_app_private_key. When both are
+          provided, each install-needing job mints a fresh installation token
+          via actions/create-github-app-token and uses it to authenticate
+          against GitHub Packages for private partner packages
+          (e.g. @corey-alan-consulting/v1-sdk).
+
+          Minting happens inside this workflow rather than the caller because
+          GitHub Actions strips masked values from cross-job `outputs:`
+          ("Skip output 'X' since it may contain secret"), so a token minted
+          in an upstream job arrives empty here.
+        required: false
+      gh_app_private_key:
+        description: "Private key for the GitHub App in gh_app_id (PEM format)."
         required: false
 
 # Cancel in-progress workflows when a new commit is pushed
@@ -256,34 +263,41 @@ jobs:
           node-version: ${{ inputs.node_version }}
           cache: ${{ inputs.package_manager }}
 
+      # Mint a fresh installation token here (not in an upstream job) because
+      # GitHub Actions strips masked values from cross-job `outputs:` with
+      # "Skip output 'X' since it may contain secret". Same-job step outputs
+      # are masked in logs but stay readable for downstream steps.
+      - name: Mint GitHub Packages installation token
+        id: gh-app-token
+        if: ${{ secrets.gh_app_id != '' }}
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.gh_app_id }}
+          private-key: ${{ secrets.gh_app_private_key }}
+          owner: ${{ github.repository_owner }}
+
       - name: Install dependencies
         if: steps.pm.outputs.install_cmd != 'skip'
         env:
           INSTALL_CMD: ${{ steps.pm.outputs.install_cmd }}
           NPM_CONFIG_REGISTRY: https://registry.npmjs.org/
-          # Optional GH Packages auth for the @corey-alan-consulting scope.
-          # Appended to ~/.npmrc below — npm/pnpm only read env vars whose
-          # names match their config-key naming rules, and the slashes and
-          # colons in `//npm.pkg.github.com/:_authToken` make that lookup
-          # impossible. ~/.npmrc is the documented, package-manager-agnostic
-          # injection point. Empty TOKEN is fine: pnpm only needs auth when
-          # resolving a scoped dep that's actually in the dep tree.
-          TOKEN: ${{ secrets.npm_auth_token }}
+          # Optional GH Packages auth. Empty when gh_app_id/gh_app_private_key
+          # aren't supplied — install proceeds without partner-package auth,
+          # which is fine unless the lockfile pulls a scoped private dep.
+          # Sourced from the prior step's output (same job) so the value
+          # survives masking.
+          TOKEN: ${{ steps.gh-app-token.outputs.token }}
         run: |
-          # Mask the token in logs. Inherited job outputs (e.g. an App token
-          # minted in a prior job) aren't auto-masked the way `secrets.X` is
-          # when crossing job boundaries — add-mask makes the boundary safe.
           if [ -n "${TOKEN}" ]; then
             echo "::add-mask::${TOKEN}"
             echo "GH Packages token present (${#TOKEN} chars), writing auth lines"
             # Write to both project .npmrc (highest pnpm precedence) and
-            # ~/.npmrc (fallback). Project .npmrc may already pin the
-            # @corey-alan-consulting scope to GitHub Packages but lack the
-            # _authToken line — appending here keeps the token out of git.
+            # ~/.npmrc (fallback). Package-manager-agnostic; the token never
+            # lands on disk in the checked-out tree (CI scratch only).
             echo "//npm.pkg.github.com/:_authToken=${TOKEN}" >> .npmrc
             echo "//npm.pkg.github.com/:_authToken=${TOKEN}" >> "${HOME}/.npmrc"
           else
-            echo "WARNING: npm_auth_token secret is empty — install will lack GH Packages auth"
+            echo "No GH App credentials supplied — install will lack GH Packages auth"
           fi
           max_attempts=3
           attempt=1
@@ -363,24 +377,26 @@ jobs:
           node-version: ${{ inputs.node_version }}
           cache: ${{ inputs.package_manager }}
 
+      - name: Mint GitHub Packages installation token
+        id: gh-app-token
+        if: ${{ secrets.gh_app_id != '' }}
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.gh_app_id }}
+          private-key: ${{ secrets.gh_app_private_key }}
+          owner: ${{ github.repository_owner }}
+
       - name: Install dependencies
         if: steps.pm.outputs.install_cmd != 'skip'
         env:
           INSTALL_CMD: ${{ steps.pm.outputs.install_cmd }}
           NPM_CONFIG_REGISTRY: https://registry.npmjs.org/
-          TOKEN: ${{ secrets.npm_auth_token }}
+          TOKEN: ${{ steps.gh-app-token.outputs.token }}
         run: |
           if [ -n "${TOKEN}" ]; then
             echo "::add-mask::${TOKEN}"
-            echo "GH Packages token present (${#TOKEN} chars), writing auth lines"
-            # Write to both project .npmrc (highest pnpm precedence) and
-            # ~/.npmrc (fallback). Project .npmrc may already pin the
-            # @corey-alan-consulting scope to GitHub Packages but lack the
-            # _authToken line — appending here keeps the token out of git.
             echo "//npm.pkg.github.com/:_authToken=${TOKEN}" >> .npmrc
             echo "//npm.pkg.github.com/:_authToken=${TOKEN}" >> "${HOME}/.npmrc"
-          else
-            echo "WARNING: npm_auth_token secret is empty — install will lack GH Packages auth"
           fi
           eval "$INSTALL_CMD" || true
 
@@ -487,34 +503,41 @@ jobs:
           node-version: ${{ inputs.node_version }}
           cache: ${{ inputs.package_manager }}
 
+      # Mint a fresh installation token here (not in an upstream job) because
+      # GitHub Actions strips masked values from cross-job `outputs:` with
+      # "Skip output 'X' since it may contain secret". Same-job step outputs
+      # are masked in logs but stay readable for downstream steps.
+      - name: Mint GitHub Packages installation token
+        id: gh-app-token
+        if: ${{ secrets.gh_app_id != '' }}
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.gh_app_id }}
+          private-key: ${{ secrets.gh_app_private_key }}
+          owner: ${{ github.repository_owner }}
+
       - name: Install dependencies
         if: steps.pm.outputs.install_cmd != 'skip'
         env:
           INSTALL_CMD: ${{ steps.pm.outputs.install_cmd }}
           NPM_CONFIG_REGISTRY: https://registry.npmjs.org/
-          # Optional GH Packages auth for the @corey-alan-consulting scope.
-          # Appended to ~/.npmrc below — npm/pnpm only read env vars whose
-          # names match their config-key naming rules, and the slashes and
-          # colons in `//npm.pkg.github.com/:_authToken` make that lookup
-          # impossible. ~/.npmrc is the documented, package-manager-agnostic
-          # injection point. Empty TOKEN is fine: pnpm only needs auth when
-          # resolving a scoped dep that's actually in the dep tree.
-          TOKEN: ${{ secrets.npm_auth_token }}
+          # Optional GH Packages auth. Empty when gh_app_id/gh_app_private_key
+          # aren't supplied — install proceeds without partner-package auth,
+          # which is fine unless the lockfile pulls a scoped private dep.
+          # Sourced from the prior step's output (same job) so the value
+          # survives masking.
+          TOKEN: ${{ steps.gh-app-token.outputs.token }}
         run: |
-          # Mask the token in logs. Inherited job outputs (e.g. an App token
-          # minted in a prior job) aren't auto-masked the way `secrets.X` is
-          # when crossing job boundaries — add-mask makes the boundary safe.
           if [ -n "${TOKEN}" ]; then
             echo "::add-mask::${TOKEN}"
             echo "GH Packages token present (${#TOKEN} chars), writing auth lines"
             # Write to both project .npmrc (highest pnpm precedence) and
-            # ~/.npmrc (fallback). Project .npmrc may already pin the
-            # @corey-alan-consulting scope to GitHub Packages but lack the
-            # _authToken line — appending here keeps the token out of git.
+            # ~/.npmrc (fallback). Package-manager-agnostic; the token never
+            # lands on disk in the checked-out tree (CI scratch only).
             echo "//npm.pkg.github.com/:_authToken=${TOKEN}" >> .npmrc
             echo "//npm.pkg.github.com/:_authToken=${TOKEN}" >> "${HOME}/.npmrc"
           else
-            echo "WARNING: npm_auth_token secret is empty — install will lack GH Packages auth"
+            echo "No GH App credentials supplied — install will lack GH Packages auth"
           fi
           max_attempts=3
           attempt=1

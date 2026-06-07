@@ -262,11 +262,12 @@ jobs:
           INSTALL_CMD: ${{ steps.pm.outputs.install_cmd }}
           NPM_CONFIG_REGISTRY: https://registry.npmjs.org/
           # Optional GH Packages auth for the @corey-alan-consulting scope.
-          # The env var name contains slashes (npm-config wire format), which
-          # bash variable assignment can't represent — `env "K=V"` passes it
-          # through verbatim to the install child process where pnpm reads it.
-          # Empty TOKEN is fine: pnpm only needs auth when resolving a scoped
-          # dep that's actually in the dep tree.
+          # Appended to ~/.npmrc below — npm/pnpm only read env vars whose
+          # names match their config-key naming rules, and the slashes and
+          # colons in `//npm.pkg.github.com/:_authToken` make that lookup
+          # impossible. ~/.npmrc is the documented, package-manager-agnostic
+          # injection point. Empty TOKEN is fine: pnpm only needs auth when
+          # resolving a scoped dep that's actually in the dep tree.
           TOKEN: ${{ secrets.npm_auth_token }}
         run: |
           # Mask the token in logs. Inherited job outputs (e.g. an App token
@@ -274,12 +275,13 @@ jobs:
           # when crossing job boundaries — add-mask makes the boundary safe.
           if [ -n "${TOKEN}" ]; then
             echo "::add-mask::${TOKEN}"
+            echo "//npm.pkg.github.com/:_authToken=${TOKEN}" >> "${HOME}/.npmrc"
           fi
           max_attempts=3
           attempt=1
           while [ $attempt -le $max_attempts ]; do
             echo "Attempt $attempt of $max_attempts..."
-            if env "NPM_CONFIG_//npm.pkg.github.com/:_authToken=${TOKEN}" sh -c "$INSTALL_CMD"; then
+            if eval "$INSTALL_CMD"; then
               exit 0
             fi
             [ $attempt -lt $max_attempts ] && sleep 10
@@ -362,8 +364,9 @@ jobs:
         run: |
           if [ -n "${TOKEN}" ]; then
             echo "::add-mask::${TOKEN}"
+            echo "//npm.pkg.github.com/:_authToken=${TOKEN}" >> "${HOME}/.npmrc"
           fi
-          env "NPM_CONFIG_//npm.pkg.github.com/:_authToken=${TOKEN}" sh -c "$INSTALL_CMD" || true
+          eval "$INSTALL_CMD" || true
 
       - name: Security audit
         run: ${{ steps.pm.outputs.audit_cmd }}
@@ -474,11 +477,12 @@ jobs:
           INSTALL_CMD: ${{ steps.pm.outputs.install_cmd }}
           NPM_CONFIG_REGISTRY: https://registry.npmjs.org/
           # Optional GH Packages auth for the @corey-alan-consulting scope.
-          # The env var name contains slashes (npm-config wire format), which
-          # bash variable assignment can't represent — `env "K=V"` passes it
-          # through verbatim to the install child process where pnpm reads it.
-          # Empty TOKEN is fine: pnpm only needs auth when resolving a scoped
-          # dep that's actually in the dep tree.
+          # Appended to ~/.npmrc below — npm/pnpm only read env vars whose
+          # names match their config-key naming rules, and the slashes and
+          # colons in `//npm.pkg.github.com/:_authToken` make that lookup
+          # impossible. ~/.npmrc is the documented, package-manager-agnostic
+          # injection point. Empty TOKEN is fine: pnpm only needs auth when
+          # resolving a scoped dep that's actually in the dep tree.
           TOKEN: ${{ secrets.npm_auth_token }}
         run: |
           # Mask the token in logs. Inherited job outputs (e.g. an App token
@@ -486,12 +490,13 @@ jobs:
           # when crossing job boundaries — add-mask makes the boundary safe.
           if [ -n "${TOKEN}" ]; then
             echo "::add-mask::${TOKEN}"
+            echo "//npm.pkg.github.com/:_authToken=${TOKEN}" >> "${HOME}/.npmrc"
           fi
           max_attempts=3
           attempt=1
           while [ $attempt -le $max_attempts ]; do
             echo "Attempt $attempt of $max_attempts..."
-            if env "NPM_CONFIG_//npm.pkg.github.com/:_authToken=${TOKEN}" sh -c "$INSTALL_CMD"; then
+            if eval "$INSTALL_CMD"; then
               exit 0
             fi
             [ $attempt -lt $max_attempts ] && sleep 10

@@ -240,7 +240,11 @@ jobs:
             case "$PM" in
               npm)  echo "test_cmd=npm test -- --passWithNoTests" >> "$GITHUB_OUTPUT" ;;
               yarn) echo "test_cmd=yarn test --passWithNoTests" >> "$GITHUB_OUTPUT" ;;
-              *)    echo "test_cmd=pnpm test --passWithNoTests" >> "$GITHUB_OUTPUT" ;;
+              # pnpm 9+ treats flags after a script name as pnpm options unless
+              # `--` is present. Without the separator, `--passWithNoTests`
+              # errors as "Unknown option: 'passWithNoTests'" instead of
+              # being forwarded to the underlying test runner.
+              *)    echo "test_cmd=pnpm test -- --passWithNoTests" >> "$GITHUB_OUTPUT" ;;
             esac
           fi
 

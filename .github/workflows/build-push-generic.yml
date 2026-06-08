@@ -59,6 +59,16 @@ on:
         required: false
         type: string
         default: ""
+    secrets:
+      npm_auth_token:
+        description: |
+          Optional npm registry auth token for installing private scoped
+          packages (e.g. @corey-alan-consulting/*). Forwarded to the Docker
+          build as a BuildKit secret with id=npm_token. Consume it from
+          within the Dockerfile via:
+            RUN --mount=type=secret,id=npm_token ...
+          The value is never written to image layers.
+        required: false
 
 concurrency:
   group: deploy-${{ inputs.app_name }}-${{ github.ref }}
@@ -113,6 +123,8 @@ jobs:
           push: true
           tags: ${{ steps.tags.outputs.tags }}
           build-args: ${{ inputs.build_args }}
+          secrets: |
+            npm_token=${{ secrets.npm_auth_token }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 

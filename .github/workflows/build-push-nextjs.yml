@@ -597,14 +597,32 @@ jobs:
 
       - name: Determine tags
         id: tags
+        env:
+          SHA: ${{ github.sha }}
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
         run: |
-          TAGS="${IMAGE}:${{ github.sha }}"
+          TAGS="${IMAGE}:${SHA}"
           TAGS="${TAGS},${IMAGE}:latest"
 
-          # Add version tag if this is a tag push
-          if [[ "${{ github.ref_type }}" == "tag" ]]; then
-            TAG_NAME="${{ github.ref_name }}"
-            TAGS="${TAGS},${IMAGE}:${TAG_NAME}"
+          # Add version tag if this is a tag push. Normalize the source-repo
+          # tag to a clean v<semver> shape so the image tag is OCI-valid and
+          # matches the platform-infra helm convention regardless of which
+          # release tool ran upstream:
+          #   - release-please: "v0.1.5"                  -> "v0.1.5"
+          #   - Changesets:     "blue-skysolutions@0.1.6" -> "v0.1.6"
+          # Only the '@'-shaped form is rewritten; legacy / component-
+          # prefixed tags like "license-v2.0.0" are passed through unchanged
+          # (callers gate those out at the deploy.yml trigger anyway).
+          # OCI distribution disallows '@' in tags, so the raw Changesets
+          # tag would fail the push outright if we didn't rewrite it.
+          if [[ "$REF_TYPE" == "tag" ]]; then
+            if [[ "$REF_NAME" == *"@"* ]]; then
+              VERSION="v${REF_NAME##*@}"
+            else
+              VERSION="$REF_NAME"
+            fi
+            TAGS="${TAGS},${IMAGE}:${VERSION}"
           fi
 
           echo "tags=${TAGS}" >> "$GITHUB_OUTPUT"
@@ -662,8 +680,15 @@ jobs:
           TAGS="${MIGRATE_IMAGE}:${SHA}"
           TAGS="${TAGS},${MIGRATE_IMAGE}:latest"
 
+          # Mirror the web-image normalization above so the migrate image
+          # carries the same v<semver> tag the web image does.
           if [[ "$REF_TYPE" == "tag" ]]; then
-            TAGS="${TAGS},${MIGRATE_IMAGE}:${REF_NAME}"
+            if [[ "$REF_NAME" == *"@"* ]]; then
+              VERSION="v${REF_NAME##*@}"
+            else
+              VERSION="$REF_NAME"
+            fi
+            TAGS="${TAGS},${MIGRATE_IMAGE}:${VERSION}"
           fi
 
           echo "tags=${TAGS}" >> "$GITHUB_OUTPUT"

@@ -107,11 +107,23 @@ jobs:
 
       - name: Determine tags
         id: tags
+        env:
+          SHA: ${{ github.sha }}
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
         run: |
-          TAGS="${IMAGE}:${{ github.sha }}"
+          TAGS="${IMAGE}:${SHA}"
           TAGS="${TAGS},${IMAGE}:latest"
-          if [[ "${{ github.ref_type }}" == "tag" ]]; then
-            TAGS="${TAGS},${IMAGE}:${{ github.ref_name }}"
+          # Normalize Changesets-style "<pkg>@<semver>" tags to "v<semver>"
+          # since '@' isn't legal in OCI image tags. Pass other shapes
+          # through unchanged. See build-push-nextjs.yml for full rationale.
+          if [[ "$REF_TYPE" == "tag" ]]; then
+            if [[ "$REF_NAME" == *"@"* ]]; then
+              VERSION="v${REF_NAME##*@}"
+            else
+              VERSION="$REF_NAME"
+            fi
+            TAGS="${TAGS},${IMAGE}:${VERSION}"
           fi
           echo "tags=${TAGS}" >> "$GITHUB_OUTPUT"
 

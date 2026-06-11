@@ -238,13 +238,27 @@ jobs:
             echo "test_cmd=$INPUT_TEST" >> "$GITHUB_OUTPUT"
           else
             case "$PM" in
+              # npm requires `--` to forward args to the underlying script.
+              # NOTE: if the script invokes jest, jest will read everything
+              # after `--` as a positional test path pattern, so
+              # `--passWithNoTests` becomes a pattern matching zero files
+              # and jest exits 1. npm + jest consumers must override
+              # `test_command` (e.g. `npm run test:ci` with the flag baked
+              # into the script body).
               npm)  echo "test_cmd=npm test -- --passWithNoTests" >> "$GITHUB_OUTPUT" ;;
+              # yarn forwards args directly without injecting `--`, so the
+              # flag reaches jest as a flag, not as a path pattern.
               yarn) echo "test_cmd=yarn test --passWithNoTests" >> "$GITHUB_OUTPUT" ;;
-              # pnpm 9+ treats flags after a script name as pnpm options unless
-              # `--` is present. Without the separator, `--passWithNoTests`
-              # errors as "Unknown option: 'passWithNoTests'" instead of
-              # being forwarded to the underlying test runner.
-              *)    echo "test_cmd=pnpm test -- --passWithNoTests" >> "$GITHUB_OUTPUT" ;;
+              # pnpm 10+ forwards unknown flags after the script name
+              # directly to the script (no `--` injected). Empirically
+              # verified with pnpm 10.34.1: `pnpm test --foo` produces
+              # `<script-body> --foo`, not `<script-body> -- --foo`. Earlier
+              # versions of pnpm (≤9) DID intercept unknown flags as pnpm
+              # options — consumers still on pnpm ≤9 must override
+              # `test_command`. Using `--` here would cause jest to read
+              # `--passWithNoTests` as a test path pattern (matches zero
+              # files → exits 1), so we deliberately omit it.
+              *)    echo "test_cmd=pnpm test --passWithNoTests" >> "$GITHUB_OUTPUT" ;;
             esac
           fi
 

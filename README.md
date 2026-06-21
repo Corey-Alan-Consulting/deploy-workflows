@@ -142,6 +142,7 @@ Full CI/CD pipeline: test, security scan, build, Docker push, image sign, image 
 | `registry` | `us-central1-docker.pkg.dev` | AR hostname |
 | `wif_provider_override` | `""` | Override WIF provider path |
 | `wif_sa_override` | `""` | Override service account email |
+| `turbo_team` | `""` | Per-app Turborepo remote-cache namespace (defaults to `app_name`) |
 
 ### Optional Secrets
 
@@ -149,6 +150,15 @@ Full CI/CD pipeline: test, security scan, build, Docker push, image sign, image 
 |--------|-------------|
 | `bws_access_token` | Bitwarden Secrets Manager token (for build-time secrets) |
 | `build_secrets` | Bitwarden secret mappings (bitwarden/sm-action format) |
+| `npm_auth_token` | npmjs.org token for installing private scoped packages |
+| `turbo_token` | Bearer token for the shared Turborepo remote cache. Empty → local cache only |
+| `turbo_signature_key` | HMAC key for Turbo cache artifact signing (needs `remoteCache.signature` in `turbo.json`). Empty → local cache only |
+
+> **Remote cache:** the cache base URL comes from the org variable `vars.TURBO_API`.
+> This workflow runs only on tag / default-branch pushes, so passing `turbo_token`
+> keeps cache **writes** confined to trusted release builds (Tier 1). Both secrets
+> are optional — without them the build falls back to the local cache and never
+> blocks on a cache outage.
 
 ### Build Modes
 

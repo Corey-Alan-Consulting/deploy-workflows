@@ -1,0 +1,14 @@
+version: 2
+updates:
+  # GitHub Actions used by the reusable workflows in .github/workflows/.
+  # Keeps the SHA pins current (Dependabot bumps the SHA and updates the
+  # trailing `# vX.Y.Z` comment) so security patches aren't silently missed.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    groups:
+      actions:
+        patterns: ['*']

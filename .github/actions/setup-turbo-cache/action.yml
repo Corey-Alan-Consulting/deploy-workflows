@@ -1,0 +1,45 @@
+name: Setup Turbo Remote Cache
+description: >-
+  Sets the turbo remote-cache env. No-op without a token (local cache only), so
+  it is safe to call unconditionally. Requires remoteCache.signature in turbo.json.
+
+inputs:
+  turbo_api:
+    description: Remote cache base URL.
+    required: true
+  turbo_team:
+    description: Per-app cache namespace (e.g. capturly).
+    required: true
+  turbo_token:
+    description: Bearer token. Supply only in trusted contexts; empty elsewhere.
+    required: false
+    default: ""
+  signature_key:
+    description: HMAC key for client-side artifact verification.
+    required: false
+    default: ""
+
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      env:
+        IN_API: ${{ inputs.turbo_api }}
+        IN_TEAM: ${{ inputs.turbo_team }}
+        IN_TOKEN: ${{ inputs.turbo_token }}
+        IN_SIG: ${{ inputs.signature_key }}
+      run: |
+        if [ -z "$IN_TOKEN" ]; then
+          echo "No TURBO_TOKEN supplied — remote cache disabled, using local cache only."
+          exit 0
+        fi
+        # Mask before anything else can echo them.
+        echo "::add-mask::$IN_TOKEN"
+        [ -n "$IN_SIG" ] && echo "::add-mask::$IN_SIG"
+        {
+          echo "TURBO_API=$IN_API"
+          echo "TURBO_TEAM=$IN_TEAM"
+          echo "TURBO_TOKEN=$IN_TOKEN"
+          echo "TURBO_REMOTE_CACHE_SIGNATURE_KEY=$IN_SIG"
+        } >> "$GITHUB_ENV"
+        echo "Remote turbo cache enabled for team '$IN_TEAM'."

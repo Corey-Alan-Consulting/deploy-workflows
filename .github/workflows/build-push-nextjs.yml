@@ -129,6 +129,12 @@ on:
         required: false
         type: string
         default: ""
+      # Turborepo remote cache (platform-infra turbo-cache service)
+      turbo_team:
+        description: "Per-app Turborepo remote-cache namespace (defaults to app_name when empty)."
+        required: false
+        type: string
+        default: ""
       # Migration image (optional - for apps with database migrations)
       build_migration_image:
         description: "Build a lightweight migration image alongside the app image"
@@ -169,6 +175,23 @@ on:
           an npmjs.com automation token or granular access token with read
           access to the relevant org/scope. Stored as an org-level Actions
           secret so consumer repos inherit it automatically.
+        required: false
+      turbo_token:
+        description: |
+          Bearer token for the shared Turborepo remote cache (the platform-infra
+          turbo-cache service at vars.TURBO_API). This reusable workflow runs
+          only on tag / default-branch pushes — a post-review release context —
+          so passing a read+write token here keeps cache writes confined to
+          trusted builds (Tier 1 of the remote-cache plan). Empty → the
+          setup-turbo-cache action no-ops and builds use the local cache only.
+        required: false
+      turbo_signature_key:
+        description: |
+          HMAC-SHA256 key Turbo uses to sign and verify cache artifacts
+          (the app's turbo.json must set "remoteCache": { "signature": true }).
+          Client-side only — never transmitted to the cache server, so a server
+          or bucket compromise cannot forge a replayable artifact. Empty →
+          unsigned / local cache only.
         required: false
 
 # Cancel in-progress workflows when a new commit is pushed
@@ -304,6 +327,17 @@ jobs:
             attempt=$((attempt + 1))
           done
           exit 1
+
+      # No-op without a token (vars.TURBO_API + the protected secrets); when
+      # present, lint/test tasks routed through `turbo run` replay from the
+      # shared remote cache instead of recomputing.
+      - name: Setup Turbo remote cache
+        uses: Corey-Alan-Consulting/deploy-workflows/.github/actions/setup-turbo-cache@main
+        with:
+          turbo_api: ${{ vars.TURBO_API }}
+          turbo_team: ${{ inputs.turbo_team != '' && inputs.turbo_team || inputs.app_name }}
+          turbo_token: ${{ secrets.turbo_token }}
+          signature_key: ${{ secrets.turbo_signature_key }}
 
       - name: Pre-build commands
         if: inputs.pre_build_commands != ''
@@ -526,6 +560,18 @@ jobs:
       - name: Pre-build commands
         if: inputs.pre_build_commands != ''
         run: ${{ inputs.pre_build_commands }}
+
+      # No-op without a token; when enabled, a `turbo run build` replays an
+      # unchanged build from the shared remote cache. Signature-verified on
+      # download, so a cache hit can't inject untrusted output — the image is
+      # still Trivy-gated and cosign-signed downstream regardless.
+      - name: Setup Turbo remote cache
+        uses: Corey-Alan-Consulting/deploy-workflows/.github/actions/setup-turbo-cache@main
+        with:
+          turbo_api: ${{ vars.TURBO_API }}
+          turbo_team: ${{ inputs.turbo_team != '' && inputs.turbo_team || inputs.app_name }}
+          turbo_token: ${{ secrets.turbo_token }}
+          signature_key: ${{ secrets.turbo_signature_key }}
 
       - name: Remove local .env files
         run: rm -f .env .env.local .env.production .env.production.local .env.development .env.development.local 2>/dev/null || true

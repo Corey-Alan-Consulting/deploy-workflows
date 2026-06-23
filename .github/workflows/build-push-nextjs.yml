@@ -705,8 +705,11 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
+      # Pin cosign — an unpinned installer floats and silently flipped v2->v3.
       - name: Sign image with Cosign
         uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+        with:
+          cosign-release: v3.0.6
       - run: cosign sign --yes "${IMAGE}@${{ steps.push.outputs.digest }}"
 
   # ===========================================================================
@@ -776,8 +779,11 @@ jobs:
           cache-from: type=gha,scope=migration
           cache-to: type=gha,mode=max,scope=migration
 
+      # Pinned to v3.0.6 to match the app image sign step above.
       - name: Sign migration image with Cosign
         uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+        with:
+          cosign-release: v3.0.6
       - env:
           DIGEST: ${{ steps.push.outputs.digest }}
         run: cosign sign --yes "${MIGRATE_IMAGE}@${DIGEST}"

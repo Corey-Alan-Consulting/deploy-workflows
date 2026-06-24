@@ -721,6 +721,8 @@ jobs:
           fi
 
           echo "tags=${TAGS}" >> "$GITHUB_OUTPUT"
+          # version label = v<semver> on tag pushes, else the commit SHA.
+          echo "version=${VERSION:-$SHA}" >> "$GITHUB_OUTPUT"
 
       - id: push
         uses: docker/build-push-action@f9f3042f7e2789586610d6e8b85c8f03e5195baf # v7.2.0
@@ -729,6 +731,18 @@ jobs:
           file: ${{ inputs.dockerfile }}
           push: true
           tags: ${{ steps.tags.outputs.tags }}
+          # OCI provenance: gitops-trigger reads these labels to link the deploy
+          # PR back to the source repo / commit / release.
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.version=${{ steps.tags.outputs.version }}
+          # SLSA provenance + SBOM attestations (parity with the in-repo platform
+          # builds). This makes the pushed artifact a multi-arch index; the
+          # gitops-trigger resolves index digests on AR HEAD (#658) and filters
+          # .sig/.att events, and cosign signs the index digest below.
+          provenance: mode=max
+          sbom: true
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
@@ -803,6 +817,8 @@ jobs:
           file: ${{ inputs.migration_dockerfile }}
           push: true
           tags: ${{ steps.tags.outputs.tags }}
+          provenance: mode=max
+          sbom: true
           cache-from: type=gha,scope=migration
           cache-to: type=gha,mode=max,scope=migration
 

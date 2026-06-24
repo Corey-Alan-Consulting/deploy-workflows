@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="x-apple-disable-message-reformatting" />
+    <title>{{repo}} {{version}} released</title>
+  </head>
+  <!-- Branding mirrors coreyalan.com src/emails/layout.tsx (EmailLayout):
+       page #f4f4f4, 600px white card, logo.webp @180px, brand #37abc8,
+       #1a1a1a headings / #555555 body / #f8f9fa box, CAC footer. -->
+  <body style="margin:0;padding:0;background-color:#f4f4f4;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;">
+    <!-- preheader (hidden) -->
+    <div style="display:none;max-height:0;overflow:hidden;opacity:0;">
+      {{repo}} {{version}} is live — {{summary}}
+    </div>
+
+    <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background-color:#f4f4f4;">
+      <tr>
+        <td align="center" style="padding:24px 12px;">
+          <table role="presentation" width="600" cellpadding="0" cellspacing="0"
+                 style="max-width:600px;width:100%;background-color:#ffffff;border-radius:8px;border:1px solid #eeeeee;">
+            <tr>
+              <td style="padding:32px;">
+
+                <!-- logo -->
+                <table role="presentation" width="100%" cellpadding="0" cellspacing="0">
+                  <tr><td align="center" style="padding-bottom:28px;">
+                    <img src="https://coreyalan.com/images/logo.webp" alt="Corey Alan Consulting"
+                         width="180" style="display:block;border:0;outline:none;text-decoration:none;width:180px;height:auto;" />
+                  </td></tr>
+                </table>
+
+                <!-- heading -->
+                <h1 style="margin:0 0 8px;color:#1a1a1a;font-size:24px;line-height:1.3;font-weight:700;">
+                  🚀 {{repo}} {{version}}
+                </h1>
+                <p style="margin:0 0 20px;color:#555555;font-size:16px;line-height:1.6;">
+                  A new release is live{{date_suffix}}.
+                </p>
+
+                <!-- release notes box -->
+                <table role="presentation" width="100%" cellpadding="0" cellspacing="0"
+                       style="background-color:#f8f9fa;border-radius:6px;">
+                  <tr><td style="padding:20px;">
+                    <p style="margin:0 0 8px;color:#1a1a1a;font-size:14px;font-weight:600;text-transform:uppercase;letter-spacing:.4px;">
+                      What's new
+                    </p>
+                    <div style="color:#555555;font-size:15px;line-height:1.6;">{{notes_html}}</div>
+                  </td></tr>
+                </table>
+
+                <!-- CTA -->
+                <table role="presentation" width="100%" cellpadding="0" cellspacing="0">
+                  <tr><td align="center" style="padding:28px 0 8px;">
+                    <a href="{{release_url}}"
+                       style="display:inline-block;background-color:#37abc8;color:#ffffff;text-decoration:none;font-size:15px;font-weight:600;padding:12px 28px;border-radius:6px;">
+                      View the release
+                    </a>
+                  </td></tr>
+                </table>
+
+                <!-- footer -->
+                <hr style="border:none;border-top:1px solid #eeeeee;margin:32px 0 20px;" />
+                <p style="margin:4px 0;text-align:center;color:#888888;font-size:12px;line-height:1.5;">
+                  &copy; {{year}} Corey Alan Consulting. All rights reserved.
+                </p>
+                <p style="margin:4px 0;text-align:center;color:#888888;font-size:12px;line-height:1.5;">
+                  This email was sent from
+                  <a href="https://coreyalan.com" style="color:#37abc8;text-decoration:none;">coreyalan.com</a>
+                </p>
+
+              </td>
+            </tr>
+          </table>
+        </td>
+      </tr>
+    </table>
+  </body>
+</html>

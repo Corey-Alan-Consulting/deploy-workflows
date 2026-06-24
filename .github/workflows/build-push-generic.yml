@@ -137,6 +137,11 @@ jobs:
           build-args: ${{ inputs.build_args }}
           secrets: |
             npm_token=${{ secrets.npm_auth_token }}
+          # SLSA provenance + SBOM attestations (parity with the in-repo builds).
+          # Makes the artifact a multi-arch index — gitops-trigger handles index
+          # digests (#658) and cosign signs the index digest below.
+          provenance: mode=max
+          sbom: true
           cache-from: type=gha
           cache-to: type=gha,mode=max
 

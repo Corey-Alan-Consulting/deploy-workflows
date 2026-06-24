@@ -3,8 +3,12 @@ description: Send a coreyalan.com-branded release notification via the Mailgun A
 
 inputs:
   to:
-    description: Recipient email (the release owner's notification address).
-    required: true
+    description: >-
+      Recipient (the release owner's notification address). Optional — when
+      empty (e.g. RELEASE_NOTIFY_EMAIL isn't set), the email is sent to
+      company_email instead so it still goes out.
+    required: false
+    default: ""
   company_email:
     description: >-
       Company/security address always CC'd for a central release audit trail.
@@ -46,9 +50,15 @@ runs:
         ACTION_PATH: ${{ github.action_path }}
       run: |
         set -euo pipefail
-        : "${TO:?recipient 'to' is required}"
         : "${MG_KEY:?mailgun_api_key is required}"
         : "${MG_DOMAIN:?mailgun_domain is required}"
+        # No per-repo recipient set → send to the company address instead (and
+        # don't also CC it). If neither is set, there's nowhere to send.
+        if [ -z "${TO:-}" ]; then
+          TO="${COMPANY:-}"
+          COMPANY=""
+        fi
+        : "${TO:?no recipient: set 'to' (e.g. RELEASE_NOTIFY_EMAIL) or company_email}"
         FROM="${FROM_IN:-Corey Alan Consulting <noreply@${MG_DOMAIN}>}"
 
         # Render the release notes (GitHub-flavored markdown) to HTML via the
@@ -67,9 +77,12 @@ runs:
         export SUMMARY="${VERSION} is available"
         python3 "${ACTION_PATH}/render.py" "${ACTION_PATH}/release.html" > rendered.html
 
-        # Always CC the company/security address (release audit trail) unless blank.
+        # CC the company/security address (release audit trail) unless it's blank
+        # or already the To.
         cc_args=()
-        [ -n "${COMPANY:-}" ] && cc_args+=(-F "cc=${COMPANY}")
+        if [ -n "${COMPANY:-}" ] && [ "${COMPANY}" != "${TO}" ]; then
+          cc_args+=(-F "cc=${COMPANY}")
+        fi
 
         curl -sS --fail --user "api:${MG_KEY}" \
           "https://api.mailgun.net/v3/${MG_DOMAIN}/messages" \

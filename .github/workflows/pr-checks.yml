@@ -1,0 +1,47 @@
+name: PR Checks
+
+# Lint and security-audit the reusable workflows themselves: they build, sign,
+# and push every app's image and callers reference them at @main, so a broken or
+# unsafe change must be caught before it reaches main.
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+concurrency:
+  group: pr-checks-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  actionlint:
+    name: actionlint
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      # Workflow schema/expression validation + shellcheck on every run: body.
+      - uses: raven-actions/actionlint@205b530c5d9fa8f44ae9ed59f341a0db994aa6f8 # v2.1.2
+
+  zizmor:
+    name: zizmor
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      security-events: write # upload SARIF to code scanning
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      # GitHub Actions security audit: template injection, over-broad
+      # permissions, unpinned actions, credential persistence. Advisory for now —
+      # the existing workflows carry a template-injection / artipacked backlog
+      # (visible in the Security tab) to be refactored to env-passing. Once that
+      # is cleared, drop continue-on-error and add `zizmor` to required checks.
+      - uses: zizmorcore/zizmor-action@192e21d79ab29983730a13d1382995c2307fbcaa # v0.5.7
+        continue-on-error: true

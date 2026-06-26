@@ -760,9 +760,14 @@ jobs:
     name: Migration Image
     runs-on: ubuntu-latest
     needs: build
-    # Require build success before pushing migrations (a gate-block leaves build
-    # 'skipped'); the dockerfile-mode branch keeps that mode's legitimate skip.
+    # `always()` is required: without it, a skipped upstream (e.g. `test` when
+    # a caller sets enable_test: false) implicitly skips this job even though
+    # `build` itself succeeded — which silently drops the migrate image, leaving
+    # the gitops migrate-digest frozen and new migrations unapplied. `docker`
+    # and `build` already guard with always(); this job must match. The explicit
+    # result checks below still require a real build success before pushing.
     if: >-
+      always() &&
       inputs.build_migration_image && inputs.migration_ar_repository != '' &&
       (needs.build.result == 'success' ||
        (inputs.build_mode == 'dockerfile' && needs.build.result == 'skipped'))

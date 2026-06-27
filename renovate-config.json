@@ -12,8 +12,9 @@
   ],
   "packageRules": [
     {
-      "description": "First-party packages: group + automerge on green CI once a release has aged a day.",
+      "description": "First-party packages: group + automerge minor/patch on green CI once a release has aged a day. Majors are breaking by semver, so they open a normal PR for human review. Automerge assumes the consuming repo gates merges on required status checks.",
       "matchPackageNames": ["@corey-alan-consulting/**"],
+      "matchUpdateTypes": ["minor", "patch"],
       "groupName": "internal packages",
       "automerge": true,
       "minimumReleaseAge": "1 day"

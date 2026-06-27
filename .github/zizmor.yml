@@ -9,3 +9,14 @@ rules:
         # accepted. Third-party actions must still be hash-pinned.
         "Corey-Alan-Consulting/*": ref-pin
         "*": hash-pin
+  artipacked:
+    ignore:
+      # release.yml checks out with the GitHub App token so the Changesets
+      # action can push the version commit + tags. The token is least-privilege
+      # (contents + pull-requests only), so persisting it is acceptable here.
+      - release.yml
+  adhoc-packages:
+    ignore:
+      # npm 11.5.1+ is required for Trusted Publishing OIDC; setup-node ships
+      # npm 10 with Node 22, so the global upgrade is unavoidable.
+      - release.yml

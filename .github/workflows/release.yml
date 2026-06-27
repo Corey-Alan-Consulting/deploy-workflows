@@ -48,6 +48,13 @@ on:
       GITOPS_APP_PRIVATE_KEY:
         description: GitHub App private key paired with GITOPS_APP_ID.
         required: true
+      NPM_TOKEN:
+        description: >-
+          Optional npm read token, used only to install restricted
+          @scope/* dependencies during `pnpm install`. Publishing stays on
+          OIDC Trusted Publishing — this token never publishes. Omit for repos
+          with no private registry dependencies.
+        required: false
 
 # Serialize release runs: two quick pushes to main would otherwise race on
 # tag pushes and GitHub Release creation. Never cancel an in-flight release —
@@ -101,6 +108,11 @@ jobs:
         run: npm install -g npm@latest
 
       - name: Install dependencies
+        # NODE_AUTH_TOKEN is scoped to this step only, so it authenticates the
+        # install of restricted deps without leaking into the OIDC publish step
+        # (setup-node wrote an .npmrc that reads this var; empty = no auth).
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: pnpm install --frozen-lockfile
 
       - name: Create Release PR or tag versions

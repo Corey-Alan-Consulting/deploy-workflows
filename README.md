@@ -368,6 +368,7 @@ jobs:
 |--------|----------|-------------|
 | `GITOPS_APP_ID` | yes | GitHub App id; pushes version commit/tags past branch protection |
 | `GITOPS_APP_PRIVATE_KEY` | yes | Paired App private key |
+| `NPM_TOKEN` | no | npm **read** token to install restricted `@scope/*` deps during `pnpm install`. Step-scoped, never used to publish (publishing is OIDC). Pass only from repos that consume a private package |
 
 > **⚠️ Trusted Publishing + reusable workflows.** The OIDC token's `workflow`
 > claim is the **caller's** `release.yml`, so keep that filename and point each

@@ -30,6 +30,14 @@ on:
         description: Node version for the publish job. 22+ required for npm OIDC.
         type: string
         default: '22'
+      app-release-package:
+        description: >-
+          Optional workspace package name (e.g. a private deployable app). When
+          set and that package is in the published set, cut a GitHub Release
+          `<name>@<version>` from its CHANGELOG so `release: published`
+          downstream workflows fire. Empty = no app release.
+        type: string
+        default: ''
     secrets:
       GITOPS_APP_ID:
         description: GitHub App id used to push version commits/tags past branch protection.
@@ -110,7 +118,9 @@ jobs:
           PUBLISHED_PACKAGES: ${{ steps.changesets.outputs.publishedPackages }}
         run: |
           set -euo pipefail
-          pnpm -r build
+          # Each publishable package builds itself in its own prepublishOnly, so
+          # no global build here (a `pnpm -r build` would run an app's `next
+          # build` in repos whose root is the app).
           # Map each published package name -> its workspace dir, then publish.
           pnpm list -r --depth -1 --json > .pkg-paths.json
           printf '%s' "$PUBLISHED_PACKAGES" | jq -r '.[].name' | while read -r name; do
@@ -119,6 +129,49 @@ jobs:
               echo "::warning::No workspace dir for $name; skipping"
               continue
             fi
+            # Skip private packages: they get versioned/tagged (e.g. a deployable
+            # app's `app@<v>` tag) but must never be npm-published.
+            if [ "$(jq -r '.private // false' "$dir/package.json")" = "true" ]; then
+              echo "Skipping private package $name"
+              continue
+            fi
             echo "Publishing $name from $dir"
             ( cd "$dir" && npm publish --access restricted )
           done
+
+      # Optional: cut a GitHub Release for a deployable app package so the
+      # `release: published` event fires downstream (e.g. a release-email
+      # workflow). The app's git tag itself is created by `changeset tag` above;
+      # this only adds the GitHub Release object. Uses the App token so the
+      # published-release event is allowed to trigger other workflows.
+      - name: Create GitHub Release for app version
+        if: ${{ inputs.app-release-package != '' && steps.changesets.outputs.published == 'true' }}
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          PUBLISHED_PACKAGES: ${{ steps.changesets.outputs.publishedPackages }}
+          APP_PACKAGE: ${{ inputs.app-release-package }}
+        run: |
+          set -euo pipefail
+          version="$(printf '%s' "$PUBLISHED_PACKAGES" \
+            | jq -r --arg n "$APP_PACKAGE" '.[] | select(.name == $n) | .version')"
+          if [ -z "$version" ]; then
+            echo "App package $APP_PACKAGE not in published set; no app release to create."
+            exit 0
+          fi
+
+          tag="${APP_PACKAGE}@${version}"
+          if gh release view "$tag" >/dev/null 2>&1; then
+            echo "Release ${tag} already exists; skipping."
+            exit 0
+          fi
+
+          # Extract this version's CHANGELOG section (## <version> .. next ## ).
+          notes="$(awk -v hdr="## ${version}" '
+            $0 == hdr { capture = 1; next }
+            /^## / && capture { exit }
+            capture { print }
+          ' CHANGELOG.md)"
+          [ -n "$notes" ] || notes="Release ${tag}"
+
+          printf '%s\n' "$notes" > release-notes.md
+          gh release create "$tag" --title "$tag" --notes-file release-notes.md

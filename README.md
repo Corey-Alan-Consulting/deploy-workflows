@@ -345,17 +345,24 @@ jobs:
 
 ### Caller requirements
 
-- pnpm workspace with a `version-packages` script (e.g.
-  `changeset version && pnpm install --lockfile-only`) and `.changeset/config.json`.
+- pnpm workspace with a `version-packages` script. Use the retry wrapper
+  (`node scripts/changeset-version-retry.mjs && pnpm install --lockfile-only`)
+  rather than a bare `changeset version` — `@changesets/changelog-github` makes a
+  GitHub GraphQL call per changeset that intermittently fails with
+  `ERR_STREAM_PREMATURE_CLOSE`; the wrapper retries it.
+- `.changeset/config.json` present.
 - `GITOPS_APP_ID` / `GITOPS_APP_PRIVATE_KEY` available to the repo (org secrets
   scoped to it), and the GitHub App installed on the repo.
-- Each publishable package registers an npm Trusted Publisher.
+- Each **publishable** (non-private) package registers an npm Trusted Publisher
+  and builds itself in its own `prepublishOnly`. Private packages are versioned
+  and tagged but never published.
 
 ### Inputs / secrets
 
 | Input | Default | Description |
 |-------|---------|-------------|
 | `node-version` | `22` | Node version (22+ required for npm OIDC) |
+| `app-release-package` | `''` | Optional workspace package (e.g. a private deployable app). When set and in the published set, cuts a GitHub Release `<name>@<version>` from `CHANGELOG.md` so a `release: published` workflow (e.g. release-email) fires |
 
 | Secret | Required | Description |
 |--------|----------|-------------|

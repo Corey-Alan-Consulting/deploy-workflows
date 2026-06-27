@@ -15,8 +15,11 @@ name: Release
 #   version with Changesets and publish on the supported npm CLI path.
 #
 # Caller requirements:
-#   - pnpm workspace with a `version-packages` script (e.g.
-#     `changeset version && pnpm install --lockfile-only`).
+#   - pnpm workspace with a `version-packages` script. Use the retry wrapper
+#     (`node scripts/changeset-version-retry.mjs && pnpm install --lockfile-only`)
+#     rather than a bare `changeset version`: @changesets/changelog-github makes a
+#     GitHub GraphQL call per changeset that intermittently fails with
+#     ERR_STREAM_PREMATURE_CLOSE, and the wrapper retries it.
 #   - .changeset/config.json present.
 #   - Each publishable package registers an npm Trusted Publisher (see README:
 #     the OIDC `workflow` claim is the CALLER's release.yml, so keep that
@@ -45,6 +48,13 @@ on:
       GITOPS_APP_PRIVATE_KEY:
         description: GitHub App private key paired with GITOPS_APP_ID.
         required: true
+
+# Serialize release runs: two quick pushes to main would otherwise race on
+# tag pushes and GitHub Release creation. Never cancel an in-flight release —
+# it may have already npm-published and only have the release step left to do.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
 
 permissions:
   contents: write
@@ -165,13 +175,29 @@ jobs:
             exit 0
           fi
 
+          # Resolve the app package's own CHANGELOG (changesets writes one per
+          # package dir, not just the repo root). .pkg-paths.json was written by
+          # the publish step above, which runs under the same `published` gate.
+          dir="$(jq -r --arg n "$APP_PACKAGE" '.[] | select(.name == $n) | .path' .pkg-paths.json)"
+          [ -n "$dir" ] && [ "$dir" != "null" ] || dir="."
+          changelog="${dir}/CHANGELOG.md"
+
           # Extract this version's CHANGELOG section (## <version> .. next ## ).
-          notes="$(awk -v hdr="## ${version}" '
-            $0 == hdr { capture = 1; next }
-            /^## / && capture { exit }
-            capture { print }
-          ' CHANGELOG.md)"
+          # Best-effort: never hard-fail here — npm publish already ran, and a
+          # missing/empty changelog must not leave a published version with no
+          # GitHub Release. Fall back to a minimal note instead.
+          notes=""
+          if [ -f "$changelog" ]; then
+            notes="$(awk -v hdr="## ${version}" '
+              $0 == hdr { capture = 1; next }
+              /^## / && capture { exit }
+              capture { print }
+            ' "$changelog")"
+          else
+            echo "::warning::No CHANGELOG at ${changelog}; using fallback release notes."
+          fi
           [ -n "$notes" ] || notes="Release ${tag}"
 
-          printf '%s\n' "$notes" > release-notes.md
-          gh release create "$tag" --title "$tag" --notes-file release-notes.md
+          notes_file="$(mktemp)"
+          printf '%s\n' "$notes" > "$notes_file"
+          gh release create "$tag" --title "$tag" --notes-file "$notes_file"

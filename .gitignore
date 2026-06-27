@@ -1,3 +1,7 @@
 .DS_Store
 *.log
 node_modules/
+
+# Transient artifacts written by the release workflow's publish/app-release steps.
+.pkg-paths.json
+release-notes.md

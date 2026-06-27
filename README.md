@@ -316,3 +316,79 @@ jobs:
       id-token: write
       security-events: write
 ```
+
+## Reusable Workflow — release.yml (Changesets + npm publish)
+
+For repos that **publish npm packages** (e.g. `platform`), not container images.
+One run either opens a "chore: release packages" version PR or, when that PR is
+merged, tags versions and publishes each changed package to npm over Trusted
+Publishing (OIDC — no `NPM_TOKEN`).
+
+```yaml
+# .github/workflows/release.yml  (in the package repo)
+name: Release
+on:
+  push:
+    branches: [main]
+
+concurrency:
+  group: release-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    uses: Corey-Alan-Consulting/deploy-workflows/.github/workflows/release.yml@main
+    secrets:
+      GITOPS_APP_ID: ${{ secrets.GITOPS_APP_ID }}
+      GITOPS_APP_PRIVATE_KEY: ${{ secrets.GITOPS_APP_PRIVATE_KEY }}
+```
+
+### Caller requirements
+
+- pnpm workspace with a `version-packages` script (e.g.
+  `changeset version && pnpm install --lockfile-only`) and `.changeset/config.json`.
+- `GITOPS_APP_ID` / `GITOPS_APP_PRIVATE_KEY` available to the repo (org secrets
+  scoped to it), and the GitHub App installed on the repo.
+- Each publishable package registers an npm Trusted Publisher.
+
+### Inputs / secrets
+
+| Input | Default | Description |
+|-------|---------|-------------|
+| `node-version` | `22` | Node version (22+ required for npm OIDC) |
+
+| Secret | Required | Description |
+|--------|----------|-------------|
+| `GITOPS_APP_ID` | yes | GitHub App id; pushes version commit/tags past branch protection |
+| `GITOPS_APP_PRIVATE_KEY` | yes | Paired App private key |
+
+> **⚠️ Trusted Publishing + reusable workflows.** The OIDC token's `workflow`
+> claim is the **caller's** `release.yml`, so keep that filename and point each
+> npm Trusted Publisher at the **package repo** + `release.yml` (unchanged from a
+> non-reusable setup). Reusable workflows also expose a `job_workflow_ref` claim;
+> if a publish is ever rejected with an OIDC mismatch, add a publisher entry for
+> `deploy-workflows` / `release.yml`. **Verify the publish on one repo before
+> rolling this out fleet-wide.**
+
+## Renovate Preset
+
+Shared dependency-update policy for all repos. Reference it from each repo's
+`renovate.json`:
+
+```json
+{ "extends": ["github>Corey-Alan-Consulting/deploy-workflows:renovate-config"] }
+```
+
+It provides:
+
+- **Private-registry auth** for restricted `@corey-alan-consulting/*` packages via
+  a read-only `NPM_READ_TOKEN` injected by the Renovate runner (never committed —
+  the preset is public and holds no secret).
+- **Automerge of first-party packages** (`@corey-alan-consulting/**`) on green CI
+  after a 1-day release age, so internal package bumps flow with no manual work.
+- **Grouped Auth.js bumps** (`next-auth`, `@auth/*`) so the beta convergence stays
+  coordinated across repos.
+
+Run **one** bot: standardize on Renovate and disable Dependabot *version* updates
+(keep its security alerts). The same read-only token serves local installs
+(`~/.npmrc`), CI installs, and Renovate — rotate it in one place.

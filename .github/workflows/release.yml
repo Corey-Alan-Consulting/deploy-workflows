@@ -1,0 +1,119 @@
+name: Release
+
+# Reusable Changesets release + npm publish (OIDC) workflow.
+#
+# Callers (a package repo's .github/workflows/release.yml) trigger this on push
+# to main. It does ONE of two things per run:
+#   1. Pending .changeset/*.md exist -> open/update a "chore: release packages"
+#      PR that bumps versions, regenerates CHANGELOGs, and consumes changesets.
+#   2. That PR merged (no pending changesets) -> `changeset tag` writes versions
+#      + git tags, then each newly-tagged package is `npm publish`ed over OIDC.
+#
+# Why `changeset tag` + explicit `npm publish` (not `changeset publish`)?
+#   npm Trusted Publishing OIDC is documented for the npm CLI only; pnpm's OIDC
+#   support is undocumented and broke across the pnpm 10->11 transition. We
+#   version with Changesets and publish on the supported npm CLI path.
+#
+# Caller requirements:
+#   - pnpm workspace with a `version-packages` script (e.g.
+#     `changeset version && pnpm install --lockfile-only`).
+#   - .changeset/config.json present.
+#   - Each publishable package registers an npm Trusted Publisher (see README:
+#     the OIDC `workflow` claim is the CALLER's release.yml, so keep that
+#     filename and point the publisher at the package repo + release.yml).
+#   - GITOPS_APP_ID / GITOPS_APP_PRIVATE_KEY available to the caller repo.
+
+on:
+  workflow_call:
+    inputs:
+      node-version:
+        description: Node version for the publish job. 22+ required for npm OIDC.
+        type: string
+        default: '22'
+    secrets:
+      GITOPS_APP_ID:
+        description: GitHub App id used to push version commits/tags past branch protection.
+        required: true
+      GITOPS_APP_PRIVATE_KEY:
+        description: GitHub App private key paired with GITOPS_APP_ID.
+        required: true
+
+permissions:
+  contents: write
+  pull-requests: write
+  # Required for npm Trusted Publishing OIDC: the npm CLI mints + exchanges a
+  # short-lived token at publish time. No NPM_TOKEN secret needed.
+  id-token: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/create-github-app-token@d72941d797fd3113feb6b93fd0dec494b13a2547 # v1
+        id: app-token
+        with:
+          app-id: ${{ secrets.GITOPS_APP_ID }}
+          private-key: ${{ secrets.GITOPS_APP_PRIVATE_KEY }}
+
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          fetch-depth: 0
+          # The App token persists so the changesets action can push the version
+          # commit + tags. This intentionally keeps credentials in the checkout.
+          token: ${{ steps.app-token.outputs.token }}
+
+      - uses: pnpm/action-setup@f40ffcd9367d9f12939873eb1018b921a783ffaa # v4
+        with:
+          run_install: false
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: ${{ inputs.node-version }}
+          cache: pnpm
+          registry-url: 'https://registry.npmjs.org'
+
+      # Node 22 ships npm 10.x; npm 11.5.1+ gates Trusted Publishing OIDC.
+      - name: Upgrade npm to OIDC-capable version
+        run: npm install -g npm@latest
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Create Release PR or tag versions
+        id: changesets
+        uses: changesets/action@a45c4d594aa4e2c509dc14a9f2b3b67ba3780d0d # v1.9.0
+        with:
+          version: pnpm version-packages
+          # `changeset tag` updates versions, consumes changesets, regenerates
+          # CHANGELOGs, and creates git tags but does NOT publish. The action
+          # still parses "New tag" lines from stdout to populate
+          # `publishedPackages`, which the publish step below gates on.
+          publish: pnpm exec changeset tag
+          commit: 'chore: release packages'
+          title: 'chore: release packages'
+          # Commit via the GitHub API so the version commit + tags are signed
+          # with the App's GPG key (required if main enforces signed commits).
+          commitMode: github-api
+        env:
+          GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}
+
+      - name: Publish changed packages to npm (OIDC)
+        if: steps.changesets.outputs.published == 'true'
+        env:
+          # Passed via env (not inlined) so the JSON can't break the shell.
+          PUBLISHED_PACKAGES: ${{ steps.changesets.outputs.publishedPackages }}
+        run: |
+          set -euo pipefail
+          pnpm -r build
+          # Map each published package name -> its workspace dir, then publish.
+          pnpm list -r --depth -1 --json > .pkg-paths.json
+          printf '%s' "$PUBLISHED_PACKAGES" | jq -r '.[].name' | while read -r name; do
+            dir="$(jq -r --arg n "$name" '.[] | select(.name == $n) | .path' .pkg-paths.json)"
+            if [ -z "$dir" ] || [ "$dir" = "null" ]; then
+              echo "::warning::No workspace dir for $name; skipping"
+              continue
+            fi
+            echo "Publishing $name from $dir"
+            ( cd "$dir" && npm publish --access restricted )
+          done

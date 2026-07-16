@@ -133,6 +133,22 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}
 
+      - name: Build library packages (topological)
+        if: steps.changesets.outputs.published == 'true'
+        # The publish loop below iterates in workspace-discovery (alphabetical)
+        # order, NOT dependency order — a package whose workspace deps sort
+        # after it (e.g. audit -> platform-kernel) needs those deps' dist/
+        # built BEFORE its own build runs. `pnpm -r run` is topological, so
+        # one recursive build here fixes ordering for every package. Scoped to
+        # packages/** so an app repo's root `next build` never runs; packages
+        # without a build/smoke script are skipped by recursive run semantics.
+        run: |
+          set -euo pipefail
+          if [ -d packages ]; then
+            pnpm --filter './packages/**' run build
+            pnpm --filter './packages/**' run smoke
+          fi
+
       - name: Publish changed packages to npm (OIDC)
         if: steps.changesets.outputs.published == 'true'
         env:
@@ -140,9 +156,6 @@ jobs:
           PUBLISHED_PACKAGES: ${{ steps.changesets.outputs.publishedPackages }}
         run: |
           set -euo pipefail
-          # Each publishable package builds itself in its own prepublishOnly, so
-          # no global build here (a `pnpm -r build` would run an app's `next
-          # build` in repos whose root is the app).
           # Map each published package name -> its workspace dir, then publish.
           pnpm list -r --depth -1 --json > .pkg-paths.json
           printf '%s' "$PUBLISHED_PACKAGES" | jq -r '.[].name' | while read -r name; do
@@ -158,7 +171,15 @@ jobs:
               continue
             fi
             echo "Publishing $name from $dir"
-            ( cd "$dir" && npm publish --access restricted )
+            # pnpm pack rewrites `workspace:^` dependency ranges to the real
+            # versions in the tarball manifest — a bare `npm publish` ships
+            # them verbatim, producing packages consumers cannot install. The
+            # publish itself stays on the npm CLI (the documented OIDC Trusted
+            # Publishing path). Tarball publishes do not run prepublishOnly:
+            # the explicit build+smoke step above replaces it in CI, while
+            # prepublishOnly still guards manual publishes.
+            ( cd "$dir" && pnpm pack --out "$RUNNER_TEMP/publish-package.tgz" \
+              && npm publish "$RUNNER_TEMP/publish-package.tgz" --access restricted )
           done
 
       # Optional: cut a GitHub Release for a deployable app package so the

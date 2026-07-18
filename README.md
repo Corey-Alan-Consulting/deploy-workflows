@@ -198,6 +198,7 @@ Same as Next.js workflow: `app_name`, `gcp_project_id`, `gcp_project_number`, `a
 | `enable_image_cleanup` | `true` | Clean old images |
 | `images_to_keep` | `10` | Images to retain |
 | `registry` | `us-central1-docker.pkg.dev` | AR hostname |
+| `runner` | `ubuntu-latest` | Build-job runner label. Default is GitHub-hosted (also the break-glass fallback). Pass a homelab ARC scale-set label to build on the staging cluster — the caller flips back to `ubuntu-latest` to fall back (manual break-glass). A container build needs a dind-capable staging runner. |
 
 ## Versioning
 

@@ -59,6 +59,17 @@ on:
         required: false
         type: string
         default: ""
+      runner:
+        description: |
+          Runner label for the build job. Defaults to GitHub-hosted
+          (ubuntu-latest), which is also the break-glass fallback. Pass a staging
+          runner label (a homelab ARC scale set) to build on the staging cluster
+          instead; the caller flips back to ubuntu-latest by overriding this input
+          (manual break-glass). NOTE: a container build needs a docker-capable
+          runner — a staging scale set used here must run in dind mode.
+        required: false
+        type: string
+        default: "ubuntu-latest"
     secrets:
       npm_auth_token:
         description: |
@@ -82,7 +93,8 @@ env:
 jobs:
   docker:
     name: Build & Push
-    runs-on: ubuntu-latest
+    # Defaults to GitHub-hosted; pass a staging label to build on the homelab.
+    runs-on: ${{ inputs.runner }}
     timeout-minutes: 30
     permissions:
       contents: read

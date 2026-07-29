@@ -1,7 +1,12 @@
 {
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
   "description": "Shared Renovate preset for Corey Alan repos. Reference with: { \"extends\": [\"github>Corey-Alan-Consulting/deploy-workflows:renovate-config\"] }",
-  "extends": ["config:recommended", ":dependencyDashboard", ":semanticCommits"],
+  "extends": [
+    "config:recommended",
+    ":dependencyDashboard",
+    ":semanticCommits",
+    "helpers:pinGitHubActionDigests"
+  ],
   "hostRules": [
     {
       "description": "Read-only auth for restricted @corey-alan-consulting/* packages. NPM_READ_TOKEN is injected by the Renovate runner's secret store, never committed.",
@@ -18,6 +23,14 @@
       "groupName": "internal packages",
       "automerge": true,
       "minimumReleaseAge": "1 day"
+    },
+    {
+      "description": "First-party reusable workflows / composite actions: bump the SHA pin when a new deploy-workflows release tag is cut; automerge non-major on green CI, same policy as internal packages.",
+      "matchManagers": ["github-actions"],
+      "matchPackageNames": ["Corey-Alan-Consulting/deploy-workflows"],
+      "matchUpdateTypes": ["minor", "patch"],
+      "groupName": "deploy-workflows",
+      "automerge": true
     },
     {
       "description": "Coordinate Auth.js bumps across repos while next-auth is still in beta.",

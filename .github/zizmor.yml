@@ -5,7 +5,7 @@ rules:
       policies:
         # First-party org actions (e.g. this repo's own
         # .github/actions/setup-turbo-cache, referenced by the reusable
-        # workflows at @main) cannot hash-pin to themselves, so a ref pin is
+        # workflows at @v1) cannot hash-pin to themselves, so a ref pin is
         # accepted. Third-party actions must still be hash-pinned.
         "Corey-Alan-Consulting/*": ref-pin
         "*": hash-pin

@@ -16,7 +16,7 @@ on:
 
 jobs:
   deploy:
-    uses: Corey-Alan-Consulting/deploy-workflows/.github/workflows/build-push-nextjs.yml@main
+    uses: Corey-Alan-Consulting/deploy-workflows/.github/workflows/build-push-nextjs.yml@v1
     with:
       app_name: my-app
       gcp_project_id: my-gcp-project
@@ -33,7 +33,7 @@ jobs:
 ```yaml
 jobs:
   deploy:
-    uses: Corey-Alan-Consulting/deploy-workflows/.github/workflows/build-push-nextjs.yml@main
+    uses: Corey-Alan-Consulting/deploy-workflows/.github/workflows/build-push-nextjs.yml@v1
     with:
       app_name: my-app
       gcp_project_id: my-gcp-project
@@ -60,7 +60,7 @@ on:
 
 jobs:
   deploy:
-    uses: Corey-Alan-Consulting/deploy-workflows/.github/workflows/build-push-generic.yml@main
+    uses: Corey-Alan-Consulting/deploy-workflows/.github/workflows/build-push-generic.yml@v1
     with:
       app_name: my-service
       gcp_project_id: my-gcp-project
@@ -209,6 +209,27 @@ Same as Next.js workflow: `app_name`, `gcp_project_id`, `gcp_project_number`, `a
 
 Rollback: update the Helm values in platform-infra to a previous image digest.
 
+## Releases & pinning
+
+This repo ships immutable release tags (`v1.0.0`, `v1.1.0`, …) plus a moving
+major tag (`v1`). Callers must **not** reference `@main` — a push here executes
+with every caller's secrets and cloud identity on their next release.
+
+- **Callers:** pin `uses:` to the release commit SHA with a version comment
+  (`@<sha> # v1.0.0`). Renovate bumps the pin when a new tag is cut.
+- **Inside this repo:** the reusable workflows reference the composite
+  action at `@v1` (a same-commit SHA pin is impossible; the major tag is
+  moved atomically at release).
+
+Cutting a release from `main`:
+
+```bash
+git tag v1.x.y && git tag -f v1 && git push origin v1.x.y && git push -f origin v1
+```
+
+Majors (breaking input/behavior changes) get a new `v2` line; leave `v1`
+pointing at the last v1 release.
+
 ## Examples
 
 ### Next.js with Prisma and build-time secrets (pnpm)
@@ -216,7 +237,7 @@ Rollback: update the Helm values in platform-infra to a previous image digest.
 ```yaml
 jobs:
   deploy:
-    uses: Corey-Alan-Consulting/deploy-workflows/.github/workflows/build-push-nextjs.yml@main
+    uses: Corey-Alan-Consulting/deploy-workflows/.github/workflows/build-push-nextjs.yml@v1
     with:
       app_name: coreyalan
       gcp_project_id: corey-alan-prod
@@ -239,7 +260,7 @@ jobs:
 ```yaml
 jobs:
   deploy:
-    uses: Corey-Alan-Consulting/deploy-workflows/.github/workflows/build-push-nextjs.yml@main
+    uses: Corey-Alan-Consulting/deploy-workflows/.github/workflows/build-push-nextjs.yml@v1
     with:
       app_name: dispatchr-web
       gcp_project_id: dispatchr-social
@@ -264,7 +285,7 @@ jobs:
 ```yaml
 jobs:
   deploy:
-    uses: Corey-Alan-Consulting/deploy-workflows/.github/workflows/build-push-nextjs.yml@main
+    uses: Corey-Alan-Consulting/deploy-workflows/.github/workflows/build-push-nextjs.yml@v1
     with:
       app_name: my-npm-app
       gcp_project_id: my-project
@@ -284,7 +305,7 @@ jobs:
 ```yaml
 jobs:
   deploy:
-    uses: Corey-Alan-Consulting/deploy-workflows/.github/workflows/build-push-nextjs.yml@main
+    uses: Corey-Alan-Consulting/deploy-workflows/.github/workflows/build-push-nextjs.yml@v1
     with:
       app_name: my-app
       gcp_project_id: my-project
@@ -303,7 +324,7 @@ jobs:
 ```yaml
 jobs:
   deploy:
-    uses: Corey-Alan-Consulting/deploy-workflows/.github/workflows/build-push-nextjs.yml@main
+    uses: Corey-Alan-Consulting/deploy-workflows/.github/workflows/build-push-nextjs.yml@v1
     with:
       app_name: my-app
       gcp_project_id: my-project
@@ -338,7 +359,7 @@ concurrency:
 
 jobs:
   release:
-    uses: Corey-Alan-Consulting/deploy-workflows/.github/workflows/release.yml@main
+    uses: Corey-Alan-Consulting/deploy-workflows/.github/workflows/release.yml@v1
     secrets:
       GITOPS_APP_ID: ${{ secrets.GITOPS_APP_ID }}
       GITOPS_APP_PRIVATE_KEY: ${{ secrets.GITOPS_APP_PRIVATE_KEY }}

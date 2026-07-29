@@ -342,7 +342,7 @@ jobs:
       # present, lint/test tasks routed through `turbo run` replay from the
       # shared remote cache instead of recomputing.
       - name: Setup Turbo remote cache
-        uses: Corey-Alan-Consulting/deploy-workflows/.github/actions/setup-turbo-cache@main
+        uses: Corey-Alan-Consulting/deploy-workflows/.github/actions/setup-turbo-cache@v1
         with:
           turbo_api: ${{ vars.TURBO_API }}
           turbo_team: ${{ inputs.turbo_team != '' && inputs.turbo_team || inputs.app_name }}
@@ -593,7 +593,7 @@ jobs:
       # download, so a cache hit can't inject untrusted output — the image is
       # still Trivy-gated and cosign-signed downstream regardless.
       - name: Setup Turbo remote cache
-        uses: Corey-Alan-Consulting/deploy-workflows/.github/actions/setup-turbo-cache@main
+        uses: Corey-Alan-Consulting/deploy-workflows/.github/actions/setup-turbo-cache@v1
         with:
           turbo_api: ${{ vars.TURBO_API }}
           turbo_team: ${{ inputs.turbo_team != '' && inputs.turbo_team || inputs.app_name }}

@@ -487,30 +487,6 @@ jobs:
         env:
           BWS_TOKEN: ${{ secrets.bws_access_token }}
 
-      - name: Get build-time secrets from Bitwarden
-        if: steps.bws-check.outputs.has_token == 'true'
-        uses: bitwarden/sm-action@1238aae8fc64b212641190a9227c8a734ab1a793 # v3.0.1
-        with:
-          access_token: ${{ secrets.bws_access_token }}
-          secrets: ${{ secrets.build_secrets }}
-
-      # Org-level Sentry token (single source of truth) takes precedence over any
-      # SENTRY_AUTH_TOKEN the Bitwarden step exported. Runs after that step so the
-      # override wins; no-ops when the caller doesn't pass the secret, so apps
-      # still on the per-project Bitwarden copy are unaffected. Passed via env
-      # (never inlined into the script) and explicitly masked.
-      - name: Prefer org-level Sentry auth token
-        env:
-          ORG_SENTRY_TOKEN: ${{ secrets.sentry_auth_token }}
-        run: |
-          if [ -n "${ORG_SENTRY_TOKEN}" ]; then
-            echo "::add-mask::${ORG_SENTRY_TOKEN}"
-            echo "SENTRY_AUTH_TOKEN=${ORG_SENTRY_TOKEN}" >> "$GITHUB_ENV"
-            echo "Using org-level SENTRY_AUTH_TOKEN for source-map upload"
-          else
-            echo "No org-level Sentry token passed; using build_secrets value if present"
-          fi
-
       - name: Resolve package manager commands
         id: pm
         env:
@@ -583,6 +559,36 @@ jobs:
             attempt=$((attempt + 1))
           done
           exit 1
+
+      # Build-time secrets are injected AFTER dependency install so the full
+      # dependency tree (and any postinstall scripts) never executes with the
+      # caller's runtime secrets in the environment — a compromised transitive
+      # dep (Shai-Hulud-class postinstall worm) can't exfiltrate them. Install
+      # needs only npm_auth_token (set inline on that step), not this bundle.
+      # These secrets remain present for pre-build, turbo, and the build step.
+      - name: Get build-time secrets from Bitwarden
+        if: steps.bws-check.outputs.has_token == 'true'
+        uses: bitwarden/sm-action@1238aae8fc64b212641190a9227c8a734ab1a793 # v3.0.1
+        with:
+          access_token: ${{ secrets.bws_access_token }}
+          secrets: ${{ secrets.build_secrets }}
+
+      # Org-level Sentry token (single source of truth) takes precedence over any
+      # SENTRY_AUTH_TOKEN the Bitwarden step exported. Runs after that step so the
+      # override wins; no-ops when the caller doesn't pass the secret, so apps
+      # still on the per-project Bitwarden copy are unaffected. Passed via env
+      # (never inlined into the script) and explicitly masked.
+      - name: Prefer org-level Sentry auth token
+        env:
+          ORG_SENTRY_TOKEN: ${{ secrets.sentry_auth_token }}
+        run: |
+          if [ -n "${ORG_SENTRY_TOKEN}" ]; then
+            echo "::add-mask::${ORG_SENTRY_TOKEN}"
+            echo "SENTRY_AUTH_TOKEN=${ORG_SENTRY_TOKEN}" >> "$GITHUB_ENV"
+            echo "Using org-level SENTRY_AUTH_TOKEN for source-map upload"
+          else
+            echo "No org-level Sentry token passed; using build_secrets value if present"
+          fi
 
       - name: Pre-build commands
         if: inputs.pre_build_commands != ''

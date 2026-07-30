@@ -109,10 +109,15 @@ on:
         type: boolean
         default: true
       images_to_keep:
-        description: "Number of recent images to keep during cleanup"
+        description: "Minimum number of most-recent images to always keep (floor), regardless of age"
         required: false
         type: number
         default: 10
+      image_retention_days:
+        description: "Delete non-release images older than this many days (releases with a v<semver> tag are always kept)"
+        required: false
+        type: number
+        default: 90
       registry:
         description: "Artifact Registry hostname"
         required: false
@@ -915,31 +920,46 @@ jobs:
       - uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3.0.1
 
       - name: Delete old images
+        # Age-based retention that preserves the rollback story: releases carry a
+        # v<semver> tag (see the tags step) and are NEVER deleted, so a
+        # digest-repoint rollback to any past release always resolves. Everything
+        # else (per-commit :<sha> / :latest builds) is pruned once it's both
+        # outside the newest-N floor AND older than the retention window.
+        env:
+          IMAGE_PATH: "${{ inputs.registry }}/${{ inputs.gcp_project_id }}/${{ inputs.ar_repository }}"
+          KEEP: ${{ inputs.images_to_keep }}
+          RETENTION_DAYS: ${{ inputs.image_retention_days }}
         run: |
-          IMAGE_PATH="${{ inputs.registry }}/${{ inputs.gcp_project_id }}/${{ inputs.ar_repository }}"
-          KEEP=${{ inputs.images_to_keep }}
+          set -euo pipefail
+          CUTOFF=$(date -u -d "${RETENTION_DAYS} days ago" +%s)
+          echo "Retention: keep newest ${KEEP} + all v<semver> releases + anything <${RETENTION_DAYS}d; delete the rest."
 
-          echo "Listing images in ${IMAGE_PATH}..."
-          DIGESTS=$(gcloud artifacts docker images list "${IMAGE_PATH}" \
-            --sort-by="~UPDATE_TIME" \
-            --format="value(version)" \
-            --include-tags 2>/dev/null || true)
+          INDEX=0
+          DELETED=0
+          while IFS=$'\t' read -r DIGEST TAGS UPDATED; do
+            [ -z "$DIGEST" ] && continue
+            INDEX=$((INDEX + 1))
 
-          if [ -z "$DIGESTS" ]; then
-            echo "No images found or unable to list."
-            exit 0
-          fi
+            # 1) Floor: always keep the newest N images (fast rollback for untagged builds).
+            if [ "$INDEX" -le "$KEEP" ]; then continue; fi
 
-          COUNT=0
-          while IFS= read -r digest; do
-            COUNT=$((COUNT + 1))
-            if [ $COUNT -le $KEEP ]; then
-              echo "Keeping: ${digest}"
-            else
-              echo "Deleting: ${digest}"
-              gcloud artifacts docker images delete "${IMAGE_PATH}@${digest}" \
-                --quiet --delete-tags 2>/dev/null || true
+            # 2) Never delete a released image (v<semver> tag) — the rollback target.
+            if printf '%s' "$TAGS" | grep -Eq '(^|;)v?[0-9]+\.[0-9]+\.[0-9]+([-+.][0-9A-Za-z.-]+)?(;|$)'; then
+              echo "keep (release): ${DIGEST} [${TAGS}]"
+              continue
             fi
-          done <<< "$DIGESTS"
 
-          echo "Cleanup complete. Kept ${KEEP} most recent images."
+            # 3) Keep anything still inside the retention window; fail SAFE (keep)
+            #    if the timestamp can't be parsed rather than risk deleting it.
+            U=$(date -u -d "${UPDATED}" +%s 2>/dev/null || true)
+            if [ -z "$U" ]; then echo "keep (unparseable time): ${DIGEST}"; continue; fi
+            if [ "$U" -ge "$CUTOFF" ]; then continue; fi
+
+            echo "delete: ${DIGEST} [${TAGS:-<untagged>}] (updated ${UPDATED})"
+            gcloud artifacts docker images delete "${IMAGE_PATH}@${DIGEST}" --quiet --delete-tags 2>/dev/null || true
+            DELETED=$((DELETED + 1))
+          done < <(gcloud artifacts docker images list "${IMAGE_PATH}" \
+                     --sort-by="~UPDATE_TIME" --include-tags \
+                     --format="value(version,tags.join(';'),updateTime)" 2>/dev/null || true)
+
+          echo "Cleanup complete. Deleted ${DELETED} old unreleased image(s)."

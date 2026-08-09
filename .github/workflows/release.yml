@@ -183,8 +183,8 @@ jobs:
           done
 
       # Optional: cut a GitHub Release for a deployable app package so the
-      # `release: published` event fires downstream (e.g. a release-email
-      # workflow). The app's git tag itself is created by `changeset tag` above;
+      # `release: published` event fires downstream. The app's git tag itself
+      # is created by `changeset tag` above;
       # this only adds the GitHub Release object. Uses the App token so the
       # published-release event is allowed to trigger other workflows.
       - name: Create GitHub Release for app version

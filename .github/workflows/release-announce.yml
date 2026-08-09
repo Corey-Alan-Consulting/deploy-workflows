@@ -1,0 +1,180 @@
+name: Release Announcement (build)
+
+# Reusable release-announcement builder — the replacement for the retired
+# send-release-email action (which fired at tag-publish, pre-verification,
+# and rendered the root package's always-empty changelog).
+#
+# Callers (a brand repo's .github/workflows/release-announce.yml) trigger
+# this from the workflow_dispatch their Port automation fires when the
+# promote_to_production run for their service succeeds. The builder:
+#   1. resolves the released version from the newest app tag,
+#   2. waits until prod is live (health gate mode per caller),
+#   3. aggregates every per-package CHANGELOG section (hard-fails if empty),
+#   4. drafts the artifact via the AI editorial pass,
+#   5. upserts the draft on the coreyalan platform (schema enforced
+#      server-side; the release key's source binding selects the tenant),
+#   6. opens the `announce_release` Port approval run as platform-admin@
+#      (SoD: the human approver cannot be the executor).
+# Nothing here sends email — the send happens only from the approved Port
+# run via the reusable release-announce-send.yml.
+
+on:
+  workflow_call:
+    inputs:
+      product_name:
+        description: Brand name for the title and editorial prompt (e.g. Dispatchr).
+        type: string
+        required: true
+      product_description:
+        description: One clause describing the product for the editorial prompt.
+        type: string
+        required: true
+      tag_prefix:
+        description: App release tag prefix (e.g. "@dispatchr/web@") — the release.yml app-release-package tag.
+        type: string
+        required: true
+      service:
+        description: Port service entity identifier the announce_release approval run targets.
+        type: string
+        required: true
+      version:
+        description: Version override. Blank = newest tag matching tag_prefix.
+        type: string
+        default: ''
+      health_url:
+        description: Prod endpoint verified before announcing.
+        type: string
+        default: ''
+      health_mode:
+        description: 'version | status | skip. "status" suits apps whose health endpoint has no version field — the promote gate already verified the deploy.'
+        type: string
+        default: status
+      changelog_url:
+        description: Optional public changelog link included in the email.
+        type: string
+        default: ''
+      channels_json:
+        description: 'Optional JSON array of extra release channels: [{name, workflow, tagPrefix}].'
+        type: string
+        default: ''
+      api_url:
+        description: Base URL of the coreyalan platform.
+        type: string
+        default: https://coreyalan.com
+      release_key_secret_id:
+        description: Bitwarden secret id of the brand's sk_live_* release key (per-brand — its source binding selects the tenant).
+        type: string
+        required: true
+      anthropic_secret_id:
+        description: Bitwarden secret id of the Anthropic key for the editorial pass.
+        type: string
+        default: 141a9c8d-13d5-4280-92c4-b4a100e0f81f
+    secrets:
+      BWS_TOKEN_BUILD:
+        description: Bitwarden machine token that can read the editorial + release-key secrets.
+        required: true
+      BWS_TOKEN_PLATFORM:
+        description: Bitwarden machine token that can read the Port API credential pair.
+        required: true
+
+permissions:
+  contents: read
+  actions: read # surface-matrix reads release-channel run conclusions
+
+jobs:
+  build:
+    name: Build announcement draft
+    runs-on: ubuntu-latest
+    timeout-minutes: 45 # includes the prod health wait (up to 20 min)
+
+    steps:
+      # Resolve the version before checkout so we can check out the tag
+      # itself — the changelogs must be read at the released commit.
+      - name: Resolve version
+        id: version
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          TAG_PREFIX: ${{ inputs.tag_prefix }}
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          if [ -n "$INPUT_VERSION" ]; then
+            VERSION="$INPUT_VERSION"
+          else
+            VERSION=$(gh api "repos/$REPO/git/matching-refs/tags/${TAG_PREFIX}" |
+              jq -r --arg p "refs/tags/$TAG_PREFIX" \
+                '[.[].ref | ltrimstr($p)] | sort_by(split(".") | map(tonumber)) | last')
+          fi
+          if ! printf '%s' "$VERSION" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+([-+][0-9A-Za-z.-]+)?$'; then
+            echo "::error::Could not resolve a semver version (got '$VERSION')"; exit 1
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Resolved version: $VERSION"
+
+      - name: Checkout release tag
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.tag_prefix }}${{ steps.version.outputs.version }}
+          persist-credentials: false
+
+      - name: Get builder secrets from Bitwarden
+        uses: bitwarden/sm-action@1238aae8fc64b212641190a9227c8a734ab1a793 # v3.0.1
+        with:
+          access_token: ${{ secrets.BWS_TOKEN_BUILD }}
+          secrets: |
+            ${{ inputs.anthropic_secret_id }} > ANTHROPIC_API_KEY
+            ${{ inputs.release_key_secret_id }} > COREYALAN_RELEASE_API_KEY
+
+      - name: Build and upsert draft
+        id: draft
+        uses: Corey-Alan-Consulting/deploy-workflows/.github/actions/build-release-announcement@main
+        with:
+          version: ${{ steps.version.outputs.version }}
+          product_name: ${{ inputs.product_name }}
+          product_description: ${{ inputs.product_description }}
+          health_url: ${{ inputs.health_url }}
+          health_mode: ${{ inputs.health_mode }}
+          changelog_url: ${{ inputs.changelog_url }}
+          channels_json: ${{ inputs.channels_json }}
+          api_url: ${{ inputs.api_url }}
+          anthropic_api_key: ${{ env.ANTHROPIC_API_KEY }}
+          release_api_key: ${{ env.COREYALAN_RELEASE_API_KEY }}
+          github_token: ${{ github.token }}
+
+      # Open the approval run AS platform-admin@ — the promotion-gate
+      # pattern. An org token is required for run_as; the creds are the
+      # same Platform Infrastructure pair sync-store-state reads.
+      - name: Load Port API creds from Bitwarden
+        uses: bitwarden/sm-action@1238aae8fc64b212641190a9227c8a734ab1a793 # v3.0.1
+        with:
+          access_token: ${{ secrets.BWS_TOKEN_PLATFORM }}
+          secrets: |
+            856c240c-a6cb-4ddd-9e78-b4950103a55a > PORT_CLIENT_ID
+            7530bead-5bee-4fdc-8ce2-b4950103ce59 > PORT_CLIENT_SECRET
+
+      - name: Open Port approval run (run_as platform-admin@)
+        env:
+          ANNOUNCEMENT_ID: ${{ steps.draft.outputs.announcement_id }}
+          VERSION: ${{ steps.draft.outputs.announcement_version }}
+          SERVICE: ${{ inputs.service }}
+          RUN_AS: platform-admin@coreyalan.com
+        run: |
+          set -euo pipefail
+          PTOK=$(curl -sS -X POST https://api.port.io/v1/auth/access_token \
+            -H 'Content-Type: application/json' \
+            -d "$(jq -n --arg id "$PORT_CLIENT_ID" --arg s "$PORT_CLIENT_SECRET" '{clientId:$id, clientSecret:$s}')" | jq -r .accessToken)
+          if [ -z "$PTOK" ] || [ "$PTOK" = "null" ]; then echo "::error::Port auth failed"; exit 1; fi
+
+          BODY=$(jq -n --arg e "$SERVICE" --arg aid "$ANNOUNCEMENT_ID" --arg v "$VERSION" \
+            '{entity:$e, properties:{announcement_id:$aid, version:$v}}')
+          HTTP=$(curl -sS -o /tmp/resp.json -w '%{http_code}' -X POST \
+            "https://api.port.io/v1/actions/announce_release/runs?run_as=${RUN_AS}" \
+            -H "Authorization: Bearer $PTOK" \
+            -H 'Content-Type: application/json' \
+            -d "$BODY")
+          echo "Port responded $HTTP"; cat /tmp/resp.json || true
+          case "$HTTP" in
+            2*) echo "Announce-release run opened for $VERSION — awaiting human approval in Port." ;;
+            *)  echo "::error::Port run creation failed (HTTP $HTTP)"; exit 1 ;;
+          esac

@@ -1,0 +1,100 @@
+name: Release Announcement (send)
+
+# Reusable send for an approved release announcement. The caller's thin
+# workflow_dispatch workflow is dispatched EXCLUSIVELY by the Port
+# `announce_release` self-service action after human approval; the
+# actor-lock below is the bypass guard (same pattern as the capturly
+# promote-android.yml / submit-ios.yml).
+#
+# The heavy lifting lives server-side: this workflow only exchanges the
+# approved run for a POST to the coreyalan platform send endpoint, which
+# renders the artifact and hands off to the campaign engine.
+# Idempotency-Key = the Port run id, and the endpoint is additionally
+# idempotent on SENT rows, so a re-dispatch can never double-send.
+
+on:
+  workflow_call:
+    inputs:
+      announcement_id:
+        description: ReleaseAnnouncement id created by the build workflow.
+        type: string
+        required: true
+      port_run_id:
+        description: Port action-run id (approval audit link).
+        type: string
+        required: true
+      release_key_secret_id:
+        description: Bitwarden secret id of the brand's sk_live_* release key.
+        type: string
+        required: true
+      audience_tag:
+        description: Contact tag the send targets.
+        type: string
+        default: release-notify-internal
+      api_url:
+        description: Base URL of the coreyalan platform.
+        type: string
+        default: https://coreyalan.com
+    secrets:
+      BWS_TOKEN_BUILD:
+        description: Bitwarden machine token that can read the release-key secret.
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  # Loud refusal for a direct (non-Port) dispatch; requests no secrets so a
+  # bypass attempt gains nothing.
+  dispatch-guard:
+    name: Enforce Port-only dispatch
+    if: github.triggering_actor != 'port-corey-alan-consulting[bot]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Refuse direct dispatch
+        env:
+          ACTOR: ${{ github.triggering_actor }}
+        run: |
+          echo "::error::Announcements send only via the Port 'Announce Release' action after approval (dispatcher was '$ACTOR'). Approve the run in Port; direct dispatch is refused."
+          exit 1
+
+  send:
+    name: Send announcement
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    if: github.triggering_actor == 'port-corey-alan-consulting[bot]'
+
+    steps:
+      - name: Get send credential from Bitwarden
+        uses: bitwarden/sm-action@1238aae8fc64b212641190a9227c8a734ab1a793 # v3.0.1
+        with:
+          access_token: ${{ secrets.BWS_TOKEN_BUILD }}
+          secrets: |
+            ${{ inputs.release_key_secret_id }} > COREYALAN_RELEASE_API_KEY
+
+      - name: Send via coreyalan platform
+        env:
+          ANNOUNCEMENT_ID: ${{ inputs.announcement_id }}
+          PORT_RUN_ID: ${{ inputs.port_run_id }}
+          AUDIENCE_TAG: ${{ inputs.audience_tag }}
+          COREYALAN_API_URL: ${{ inputs.api_url }}
+        run: |
+          set -euo pipefail
+          if ! printf '%s' "$ANNOUNCEMENT_ID" | grep -qE '^[0-9a-f-]{36}$'; then
+            echo "::error::announcement_id is not a uuid"; exit 1
+          fi
+          BODY=$(jq -n --arg run "$PORT_RUN_ID" --arg tag "$AUDIENCE_TAG" \
+            '{portRunId:$run, audienceTag:$tag}')
+          HTTP=$(curl -sS -o /tmp/resp.json -w '%{http_code}' -X POST \
+            "${COREYALAN_API_URL}/api/v1/release-announcements/${ANNOUNCEMENT_ID}/send" \
+            -H "X-API-Key: ${COREYALAN_RELEASE_API_KEY}" \
+            -H 'Content-Type: application/json' \
+            -H "Idempotency-Key: ${PORT_RUN_ID}" \
+            -d "$BODY")
+          echo "coreyalan responded $HTTP"
+          cat /tmp/resp.json
+          case "$HTTP" in
+            200) echo "Announcement send enqueued: $(jq -r '.data.campaignId' /tmp/resp.json) (alreadySent=$(jq -r '.data.alreadySent' /tmp/resp.json))" ;;
+            *)   echo "::error::send failed (HTTP $HTTP)"; exit 1 ;;
+          esac

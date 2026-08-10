@@ -300,7 +300,7 @@ jobs:
             esac
           fi
 
-      - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
         if: inputs.package_manager == 'pnpm'
         with:
           run_install: false
@@ -410,7 +410,7 @@ jobs:
             *)    echo "audit_cmd=pnpm audit --audit-level=moderate" >> "$GITHUB_OUTPUT" ;;
           esac
 
-      - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
         if: inputs.package_manager == 'pnpm'
         with:
           run_install: false
@@ -460,7 +460,7 @@ jobs:
           severity: CRITICAL,HIGH
 
       - name: Upload SARIF results
-        uses: github/codeql-action/upload-sarif@f205ea1c3313d32999d8d6a48b4f6530d4437b38 # v4.37.4
+        uses: github/codeql-action/upload-sarif@5595ccaf912efad79be6eef63a5619ff05969be3 # v4.37.6
         if: always() && hashFiles('trivy-results.sarif') != ''
         with:
           sarif_file: trivy-results.sarif
@@ -522,7 +522,7 @@ jobs:
             esac
           fi
 
-      - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
         if: inputs.package_manager == 'pnpm'
         with:
           run_install: false
@@ -892,7 +892,7 @@ jobs:
           severity: CRITICAL,HIGH
 
       - name: Upload SARIF results
-        uses: github/codeql-action/upload-sarif@f205ea1c3313d32999d8d6a48b4f6530d4437b38 # v4.37.4
+        uses: github/codeql-action/upload-sarif@5595ccaf912efad79be6eef63a5619ff05969be3 # v4.37.6
         if: always() && hashFiles('trivy-image-results.sarif') != ''
         with:
           sarif_file: trivy-image-results.sarif

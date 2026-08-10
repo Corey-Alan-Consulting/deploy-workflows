@@ -1,5 +1,13 @@
-name: Send release email
-description: Send a coreyalan.com-branded release notification via the Mailgun API.
+name: Send release email (DEPRECATED)
+description: >-
+  DEPRECATED — do not adopt. This fired at tag-publish (before the release
+  was verified live) and rendered the root package's always-empty changelog.
+  Replaced by the release-announcement pipeline: the reusable
+  release-announce.yml / release-announce-send.yml workflows plus the
+  build-release-announcement action, which verify the deploy, aggregate
+  per-package changelogs, and send through the coreyalan platform after Port
+  approval. This action is kept only so pinned historical callers keep
+  resolving; it will be deleted once no repo references it.
 
 inputs:
   to:

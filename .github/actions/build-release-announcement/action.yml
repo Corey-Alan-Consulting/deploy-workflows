@@ -1,0 +1,74 @@
+name: Build release announcement
+description: >-
+  Verify a release is live, aggregate every workspace package's CHANGELOG
+  section for it, draft the AI-edited announcement artifact, and upsert the
+  draft on the coreyalan platform. Outputs the announcement id for the Port
+  approval run. Used by the reusable release-announce.yml workflow.
+
+inputs:
+  version:
+    description: Released app version (e.g. 0.4.2).
+    required: true
+  product_name:
+    description: Brand name used in the title and editorial prompt.
+    required: true
+  product_description:
+    description: One clause describing the product for the editorial prompt.
+    required: true
+  health_url:
+    description: Prod endpoint to verify before announcing.
+    required: false
+    default: ''
+  health_mode:
+    description: 'version | status | skip (see matrix.mjs).'
+    required: false
+    default: status
+  changelog_url:
+    description: Optional public changelog link included in the email.
+    required: false
+    default: ''
+  channels_json:
+    description: 'Optional JSON array of extra release channels: [{name, workflow, tagPrefix}].'
+    required: false
+    default: ''
+  api_url:
+    description: Base URL of the coreyalan platform.
+    required: false
+    default: https://coreyalan.com
+  anthropic_api_key:
+    description: Anthropic API key for the editorial pass.
+    required: true
+  release_api_key:
+    description: sk_live_* key with release-announcements scopes (source binding selects the tenant).
+    required: true
+  github_token:
+    description: Token for surface-matrix channel-run lookups.
+    required: true
+
+outputs:
+  announcement_id:
+    description: ReleaseAnnouncement id of the created draft.
+    value: ${{ steps.build.outputs.announcement_id }}
+  announcement_version:
+    description: Version recorded on the draft.
+    value: ${{ steps.build.outputs.announcement_version }}
+
+runs:
+  using: composite
+  steps:
+    - name: Build and upsert draft
+      id: build
+      shell: bash
+      env:
+        VERSION: ${{ inputs.version }}
+        PRODUCT_NAME: ${{ inputs.product_name }}
+        PRODUCT_DESCRIPTION: ${{ inputs.product_description }}
+        HEALTH_URL: ${{ inputs.health_url }}
+        HEALTH_MODE: ${{ inputs.health_mode }}
+        CHANGELOG_URL: ${{ inputs.changelog_url }}
+        CHANNELS_JSON: ${{ inputs.channels_json }}
+        COREYALAN_API_URL: ${{ inputs.api_url }}
+        ANTHROPIC_API_KEY: ${{ inputs.anthropic_api_key }}
+        COREYALAN_RELEASE_API_KEY: ${{ inputs.release_api_key }}
+        GITHUB_TOKEN: ${{ inputs.github_token }}
+      run: node "$GITHUB_ACTION_PATH/main.mjs"

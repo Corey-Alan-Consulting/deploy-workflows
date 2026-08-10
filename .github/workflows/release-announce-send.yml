@@ -46,9 +46,14 @@ permissions:
 jobs:
   # Loud refusal for a direct (non-Port) dispatch; requests no secrets so a
   # bypass attempt gains nothing.
+  #
+  # Actor-locked by immutable account id (310211542 =
+  # port-corey-alan-consulting[bot]) rather than login, which is renameable
+  # and re-registrable (zizmor bot-conditions). The triggering_actor==actor
+  # clause refuses re-runs by anyone other than the original dispatcher.
   dispatch-guard:
     name: Enforce Port-only dispatch
-    if: github.triggering_actor != 'port-corey-alan-consulting[bot]'
+    if: github.actor_id != 310211542 || github.triggering_actor != github.actor
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -63,7 +68,7 @@ jobs:
     name: Send announcement
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    if: github.triggering_actor == 'port-corey-alan-consulting[bot]'
+    if: github.actor_id == 310211542 && github.triggering_actor == github.actor
 
     steps:
       - name: Get send credential from Bitwarden

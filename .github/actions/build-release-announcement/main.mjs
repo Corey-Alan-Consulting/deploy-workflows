@@ -12,7 +12,8 @@
 //                               [{name, workflow, tagPrefix}]
 //   GITHUB_REPOSITORY           owner/repo (provided by Actions)
 //   GITHUB_TOKEN                for channel-run lookups
-//   ANTHROPIC_API_KEY           editorial pass
+//   ANTHROPIC_OAUTH_TOKEN       editorial pass — short-lived federated token
+//                               (or DEPRECATED ANTHROPIC_API_KEY fallback)
 //   COREYALAN_API_URL           e.g. https://coreyalan.com
 //   COREYALAN_RELEASE_API_KEY   sk_live_* with release-announcements scopes;
 //                               its source binding selects the tenant
@@ -30,6 +31,13 @@ const env = name => {
   const v = process.env[name];
   if (!v) throw new Error(`Missing required env: ${name}`);
   return v;
+};
+
+// Federated (Bearer) token preferred; static key is the deprecated fallback.
+const anthropicAuth = () => {
+  const token = process.env.ANTHROPIC_OAUTH_TOKEN;
+  if (token) return { token };
+  return { apiKey: env('ANTHROPIC_API_KEY') };
 };
 
 const version = env('VERSION');
@@ -64,7 +72,7 @@ const surfaces = await buildSurfaceMatrix({
 
 const promptArgs = { productName, productDescription, version, packages, surfaces, changelogUrl };
 const artifact = await editorial({
-  apiKey: env('ANTHROPIC_API_KEY'),
+  ...anthropicAuth(),
   prompt: buildPrompt(promptArgs),
 });
 
@@ -95,7 +103,7 @@ if (result.status === 400 && result.body?.details?.errors) {
   // Server-side schema is the hard gate; give the model its errors once.
   console.warn('Server rejected artifact, retrying editorial with feedback…');
   const retried = await editorial({
-    apiKey: env('ANTHROPIC_API_KEY'),
+    ...anthropicAuth(),
     prompt:
       buildPrompt(promptArgs) +
       `\n\nA previous attempt failed server validation with:\n${JSON.stringify(result.body.details.errors)}`,

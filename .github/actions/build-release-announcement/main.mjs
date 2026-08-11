@@ -85,13 +85,21 @@ for (let p = pat - 1; p >= 0 && supersedes.length < 5; p--) {
   supersedes.push(`${maj}.${min}.${p}`);
 }
 
+// Idempotency scope: replays of THIS workflow run reuse the key, while a
+// regeneration (new run, same version) gets a fresh one — the editorial
+// pass is non-deterministic, so a version-only key 409s IDEMPOTENCY_CONFLICT
+// on every re-draft. Cross-run dedup is the (source, version) upsert itself.
+const runScope = process.env.GITHUB_RUN_ID
+  ? `-${process.env.GITHUB_RUN_ID}.${process.env.GITHUB_RUN_ATTEMPT ?? 1}`
+  : '';
+
 const upsert = async (content, idempotencySuffix = '') => {
   const res = await fetch(`${apiUrl}/api/v1/release-announcements`, {
     method: 'POST',
     headers: {
       'content-type': 'application/json',
       'x-api-key': releaseKey,
-      'idempotency-key': `release-announce-${version}${idempotencySuffix}`,
+      'idempotency-key': `release-announce-${version}${runScope}${idempotencySuffix}`,
     },
     body: JSON.stringify({ version, content, surfaces, supersedes }),
   });

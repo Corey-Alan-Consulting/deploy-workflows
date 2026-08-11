@@ -448,6 +448,67 @@ service account, App Store Connect key). The actions carry only the shared
     r2-secret-access-key: ${{ env.R2_SECRET_ACCESS_KEY }}
 ```
 
+## Reusable Workflows — desktop release
+
+`desktop-release-macos.yml`, `desktop-release-windows.yml`, and
+`desktop-release-linux.yml` build, sign, and publish an electron app to a
+Cloudflare R2 update feed (mac/win) or the Snap Store (linux). Each sits on the
+`desktop-build-setup` action and adds only its platform's signing + packaging.
+
+**Signing identities stay per-app.** You pass them as a `bitwarden/sm-action`
+mapping in `signing-secret-ids`, using these canonical env NAMEs:
+
+| Platform | Required `signing-secret-ids` NAMEs |
+|----------|--------------------------------------|
+| macOS | `APPLE_API_KEY_B64`, `APPLE_API_KEY_ID`, `APPLE_API_ISSUER`, `CSC_LINK`, `CSC_KEY_PASSWORD`, `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY` |
+| Windows | `AZURE_TENANT_ID`, `AZURE_CLIENT_ID`, `AZURE_ENDPOINT`, `AZURE_CODE_SIGNING_NAME`, `AZURE_CERT_PROFILE_NAME`, `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY` |
+| Linux | `SNAPCRAFT_STORE_CREDENTIALS` |
+
+App-specific prebuild work (e.g. downloading FFmpeg) goes in `prebuild-command`;
+app-specific build-time env can be exported from there via `>> $GITHUB_ENV`.
+
+```yaml
+# .github/workflows/release-macos.yml  (in the app repo)
+name: Release macOS
+on:
+  push:
+    tags: ['myapp@*']
+  workflow_dispatch:
+
+jobs:
+  macos:
+    uses: Corey-Alan-Consulting/deploy-workflows/.github/workflows/desktop-release-macos.yml@v1
+    with:
+      turbo-team: myapp
+      turbo-api: ${{ vars.TURBO_API }}
+      r2-bucket: myapp-updates
+      installer-basename: MyApp
+      signing-secret-ids: |
+        11111111-1111-1111-1111-111111111111 > APPLE_API_KEY_B64
+        22222222-2222-2222-2222-222222222222 > APPLE_API_KEY_ID
+        33333333-3333-3333-3333-333333333333 > APPLE_API_ISSUER
+        44444444-4444-4444-4444-444444444444 > CSC_LINK
+        55555555-5555-5555-5555-555555555555 > CSC_KEY_PASSWORD
+        66666666-6666-6666-6666-666666666666 > R2_ACCOUNT_ID
+        77777777-7777-7777-7777-777777777777 > R2_ACCESS_KEY_ID
+        88888888-8888-8888-8888-888888888888 > R2_SECRET_ACCESS_KEY
+      build-secret-ids: |
+        99999999-9999-9999-9999-999999999999 > LICENSE_JWKS
+      prebuild-command: ./scripts/prepare-desktop-mac.sh
+      publish: ${{ startsWith(github.ref, 'refs/tags/') }}
+    secrets:
+      bws-token-signing: ${{ secrets.BWS_TOKEN_SIGNING }}
+      bws-token-build: ${{ secrets.BWS_TOKEN_BUILD }}
+      npm-token: ${{ secrets.NPM_TOKEN }}
+      turbo-token: ${{ secrets.TURBO_TOKEN }}
+      turbo-signature-key: ${{ secrets.TURBO_CACHE_SIGNATURE_KEY }}
+```
+
+Windows adds `publisher-name` + `azure-subscription-id` and needs
+`id-token: write` (keyless Authenticode via Azure Trusted Signing). Linux takes a
+required `version` (stamped into `snapcraft.yaml`) and a `snap-channel`. Set
+`publish` from the tag check so PR/dispatch dry-runs build without publishing.
+
 ## Renovate Preset
 
 Shared dependency-update policy for all repos. Reference it from each repo's

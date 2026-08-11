@@ -1,0 +1,146 @@
+# Reusable Linux desktop release (Snap build + Snap Store publish).
+#
+# Shares the desktop-build-setup scaffold (workspace build + app prebuild such as
+# FFmpeg), stamps the release version into snapcraft.yaml, builds the snap, and
+# publishes it to the Snap Store. No electron-builder here — snapcraft drives the
+# package from the built workspace. The Snap Store is the distribution channel;
+# a GitHub release of the .snap, if ever wanted, is a caller add-on (kept out so
+# this workflow needs only contents: read).
+#
+# CONVENTION — signing-secret-ids must provide: SNAPCRAFT_STORE_CREDENTIALS.
+
+name: Desktop release (Linux Snap)
+
+on:
+  workflow_call:
+    inputs:
+      version:
+        description: 'Marketing version to stamp into snapcraft.yaml (leading v is stripped)'
+        required: true
+        type: string
+      runner:
+        required: false
+        type: string
+        default: ubuntu-22.04
+      turbo-cache-environment:
+        required: false
+        type: string
+        default: turbo-cache
+      turbo-team:
+        required: true
+        type: string
+      turbo-api:
+        required: false
+        type: string
+        default: ''
+      node-version:
+        required: false
+        type: string
+        default: '22'
+      build-command:
+        required: false
+        type: string
+        default: 'pnpm run build'
+      prebuild-command:
+        description: 'App-specific shell after the workspace build (e.g. FFmpeg for Linux)'
+        required: false
+        type: string
+        default: ''
+      snapcraft-path:
+        required: false
+        type: string
+        default: snapcraft.yaml
+      snap-build-path:
+        description: 'Path passed to snapcore/action-build'
+        required: false
+        type: string
+        default: '.'
+      snap-channel:
+        required: false
+        type: string
+        default: stable
+      signing-secret-ids:
+        required: true
+        type: string
+      build-secret-ids:
+        required: false
+        type: string
+        default: ''
+      publish:
+        required: false
+        type: boolean
+        default: true
+    secrets:
+      bws-token-signing:
+        required: true
+      bws-token-build:
+        required: false
+      npm-token:
+        required: false
+      turbo-token:
+        required: false
+      turbo-signature-key:
+        required: false
+
+permissions:
+  contents: read
+
+jobs:
+  build-linux:
+    name: Build Linux Snap
+    runs-on: ${{ inputs.runner }}
+    environment: ${{ inputs.turbo-cache-environment }}
+    steps:
+      - name: Build scaffold (checkout, secrets, install, build, prebuild)
+        uses: Corey-Alan-Consulting/deploy-workflows/.github/actions/desktop-build-setup@v1
+        with:
+          node-version: ${{ inputs.node-version }}
+          build-command: ${{ inputs.build-command }}
+          prebuild-command: ${{ inputs.prebuild-command }}
+          signing-secret-ids: ${{ inputs.signing-secret-ids }}
+          build-secret-ids: ${{ inputs.build-secret-ids }}
+          turbo-api: ${{ inputs.turbo-api }}
+          turbo-team: ${{ inputs.turbo-team }}
+          bws-token-signing: ${{ secrets.bws-token-signing }}
+          bws-token-build: ${{ secrets.bws-token-build }}
+          npm-token: ${{ secrets.npm-token }}
+          turbo-token: ${{ secrets.turbo-token }}
+          turbo-signature-key: ${{ secrets.turbo-signature-key }}
+
+      # snapcraft rejects '@' and a leading 'v'; stamp a bare semver. Validated
+      # via env, never interpolated into the sed command.
+      - name: Stamp version into snapcraft.yaml
+        shell: bash
+        env:
+          VERSION: ${{ inputs.version }}
+          SNAP_PATH: ${{ inputs.snapcraft-path }}
+        run: |
+          set -euo pipefail
+          V="${VERSION##*@}"
+          V="${V#v}"
+          if ! printf '%s' "$V" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+'; then
+            echo "Refusing to stamp a non-semver version: '$V'"; exit 1
+          fi
+          sed -i "s/^version: .*/version: '${V}'/" "$SNAP_PATH"
+          echo "snapcraft version → ${V}"
+
+      - name: Build Snap
+        id: build
+        uses: snapcore/action-build@3bdaa03e1ba6bf59a65f84a751d943d549a54e79 # v1.3.0
+        with:
+          path: ${{ inputs.snap-build-path }}
+
+      - name: Upload Snap artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: linux-snap
+          path: '*.snap'
+          retention-days: 30
+
+      # SNAPCRAFT_STORE_CREDENTIALS is inherited from the signing-secret fetch.
+      - name: Publish to Snap Store
+        if: ${{ inputs.publish }}
+        uses: snapcore/action-publish@214b86e5ca036ead1668c79afb81e550e6c54d40 # v1.2.0
+        with:
+          snap: ${{ steps.build.outputs.snap }}
+          release: ${{ inputs.snap-channel }}

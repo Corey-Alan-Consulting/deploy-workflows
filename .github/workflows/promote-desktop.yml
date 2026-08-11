@@ -1,0 +1,156 @@
+# Reusable desktop beta → stable promotion (R2 update feed).
+#
+# desktop-release-{macos,windows} publish every release to the BETA channel on the
+# R2 feed; only beta-opted clients see them. This is the human gate that graduates
+# a beta build to everyone — the desktop analog of merging the prod digest PR. No
+# rebuild: the signed, versioned binaries are already on R2; this only rewrites the
+# stable manifests (latest.yml / latest-mac.yml) and refreshes the website download
+# aliases. Rollback = re-run with the PREVIOUS version (its immutable binaries are
+# still on R2). Re-run at a higher percentage to complete a staged ramp.
+#
+# GATE: approval is enforced in Port; this workflow is actor-locked to the Port
+# GitHub App (port-actor-id), so it runs only after approval. Direct dispatch is
+# refused. Actor id, not login — logins are renameable/re-registrable.
+#
+# CONVENTION — signing-secret-ids must provide:
+#   R2_ACCOUNT_ID · R2_ACCESS_KEY_ID · R2_SECRET_ACCESS_KEY
+
+name: Promote desktop release
+
+on:
+  workflow_call:
+    inputs:
+      version:
+        description: 'Version to promote to stable (must match the current beta head)'
+        required: true
+        type: string
+      staging-percentage:
+        description: 'Staged rollout percent for stable clients (1-100)'
+        required: false
+        type: string
+        default: '100'
+      r2-bucket:
+        required: true
+        type: string
+      installer-basename:
+        description: 'Website installer basename, e.g. "Capturly" → Capturly-universal.dmg / Capturly-Setup.exe'
+        required: true
+        type: string
+      port-actor-id:
+        description: 'Immutable numeric account id of the Port GitHub App (the only allowed dispatcher)'
+        required: true
+        type: string
+      signing-secret-ids:
+        required: true
+        type: string
+    secrets:
+      bws-token-signing:
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  dispatch-guard:
+    name: Enforce Port-only dispatch
+    if: ${{ github.actor_id != inputs.port-actor-id || github.triggering_actor != github.actor }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Refuse direct dispatch
+        env:
+          ACTOR: ${{ github.triggering_actor }}
+        run: |
+          echo "::error::This promotion runs only via the Port desktop-promotion action after approval (dispatcher was '$ACTOR'). Run it in Port and approve; direct dispatch is refused."
+          exit 1
+
+  promote:
+    name: Promote beta → stable
+    if: ${{ github.actor_id == inputs.port-actor-id && github.triggering_actor == github.actor }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Get R2 secrets from Bitwarden
+        uses: bitwarden/sm-action@1238aae8fc64b212641190a9227c8a734ab1a793 # v3.0.1
+        with:
+          access_token: ${{ secrets.bws-token-signing }}
+          secrets: ${{ inputs.signing-secret-ids }}
+
+      - name: Promote beta manifests to stable
+        shell: bash
+        env:
+          AWS_ACCESS_KEY_ID: ${{ env.R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ env.R2_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: auto
+          R2_ENDPOINT: https://${{ env.R2_ACCOUNT_ID }}.r2.cloudflarestorage.com
+          BUCKET: ${{ inputs.r2-bucket }}
+          INSTALLER: ${{ inputs.installer-basename }}
+          # Untrusted inputs — read via env and validated below, never
+          # interpolated into the script body.
+          VERSION: ${{ inputs.version }}
+          STAGING_PERCENTAGE: ${{ inputs.staging-percentage }}
+        run: |
+          set -euo pipefail
+
+          if ! echo "$VERSION" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+([-+][0-9A-Za-z.-]+)?$'; then
+            echo "Invalid version '$VERSION' (want semver, e.g. 2.5.0)"; exit 1
+          fi
+          PCT="${STAGING_PERCENTAGE:-100}"
+          if ! echo "$PCT" | grep -Eq '^[0-9]+$' || [ "$PCT" -lt 1 ] || [ "$PCT" -gt 100 ]; then
+            echo "Invalid staging-percentage '$PCT' (want 1-100)"; exit 1
+          fi
+
+          s3() { aws s3 "$@" --endpoint-url "$R2_ENDPOINT"; }
+          s3api_head() {
+            aws s3api head-object --bucket "$BUCKET" --key "$1" --endpoint-url "$R2_ENDPOINT" >/dev/null 2>&1
+          }
+          work="$(mktemp -d)"
+
+          # Copy the current beta manifest to the matching stable name after
+          # confirming it really describes the version being promoted (guards
+          # against a newer beta having since overwritten beta*.yml).
+          promote_manifest() {
+            local beta="$1" stable="$2"
+            if ! s3 cp "s3://$BUCKET/$beta" "$work/$beta" >/dev/null 2>&1; then
+              echo "Beta manifest '$beta' not found on the feed — nothing to promote."; exit 1
+            fi
+            local mver
+            mver="$(grep -m1 '^version:' "$work/$beta" | sed 's/^version:[[:space:]]*//' | tr -d '\r')"
+            if [ "$mver" != "$VERSION" ]; then
+              echo "Refusing to promote: $beta is at '$mver', but you asked for '$VERSION'."
+              echo "Re-run with '$mver', or ship a new beta first."
+              exit 1
+            fi
+            grep -v '^stagingPercentage:' "$work/$beta" > "$work/$stable"
+            if [ "$PCT" != "100" ]; then
+              echo "stagingPercentage: $PCT" >> "$work/$stable"
+              echo "  $stable → v$VERSION at ${PCT}%"
+            else
+              echo "  $stable → v$VERSION (full rollout)"
+            fi
+            s3 cp "$work/$stable" "s3://$BUCKET/$stable" --cache-control "no-cache"
+          }
+
+          # Refresh a mutable website alias from an immutable source already on
+          # the feed (server-side copy, no re-upload).
+          promote_alias() {
+            local src="$1" dst="$2"
+            if ! s3api_head "$src"; then
+              echo "  (skip alias) source '$src' not on feed"; return 0
+            fi
+            s3 cp "s3://$BUCKET/$src" "s3://$BUCKET/$dst" \
+              --metadata-directive REPLACE --cache-control "public, max-age=300"
+            echo "  website download $dst → $src"
+          }
+
+          echo "Promoting $INSTALLER desktop v$VERSION to STABLE (${PCT}%)"
+
+          echo "macOS:"
+          promote_manifest "beta-mac.yml" "latest-mac.yml"
+          promote_alias "staging/$VERSION/${INSTALLER}-universal.dmg" "${INSTALLER}-universal.dmg"
+
+          echo "Windows:"
+          promote_manifest "beta.yml" "latest.yml"
+          promote_alias "${INSTALLER}-Setup-$VERSION.exe" "${INSTALLER}-Setup.exe"
+
+          echo "Done. Stable clients pick up v$VERSION on their next update poll."

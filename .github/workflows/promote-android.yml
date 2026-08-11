@@ -1,0 +1,99 @@
+# Reusable Android closed-track → production promotion (Google Play).
+#
+# android-release publishes each build to a closed track (e.g. alpha). This is the
+# human gate that graduates it to the production track — the Android analog of
+# promote-desktop. No rebuild and no upload: play-publish (promote mode) re-releases
+# the versionCodes already on the source track to production, optionally as a staged
+# rollout. Re-run at a higher percentage to complete a ramp.
+#
+# GATE: approval is enforced in Port; actor-locked to the Port GitHub App
+# (port-actor-id). Direct dispatch is refused.
+#
+# AUTH: keyless WIF — the play-publisher SA must have "Release to production" in the
+# Play Console.
+
+name: Promote Android to Production
+
+on:
+  workflow_call:
+    inputs:
+      package-name:
+        description: 'applicationId, e.g. com.example.app'
+        required: true
+        type: string
+      from-track:
+        description: 'Closed track holding the build to promote'
+        required: false
+        type: string
+        default: alpha
+      to-track:
+        required: false
+        type: string
+        default: production
+      rollout-percentage:
+        description: 'Production rollout percent 1-100 (100 = full release)'
+        required: false
+        type: string
+        default: '100'
+      expect-version:
+        description: 'Optional marketing version to assert against the source release name before promoting'
+        required: false
+        type: string
+        default: ''
+      gcp-project:
+        required: true
+        type: string
+      wif-provider:
+        required: true
+        type: string
+      wif-service-account:
+        required: true
+        type: string
+      port-actor-id:
+        description: 'Immutable numeric account id of the Port GitHub App (the only allowed dispatcher)'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  dispatch-guard:
+    name: Enforce Port-only dispatch
+    if: ${{ github.actor_id != inputs.port-actor-id || github.triggering_actor != github.actor }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Refuse direct dispatch
+        env:
+          ACTOR: ${{ github.triggering_actor }}
+        run: |
+          echo "::error::This promotion runs only via the Port Android-promotion action after approval (dispatcher was '$ACTOR'). Run it in Port and approve; direct dispatch is refused."
+          exit 1
+
+  promote:
+    name: Promote to production
+    if: ${{ github.actor_id == inputs.port-actor-id && github.triggering_actor == github.actor }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      id-token: write # mint the WIF OIDC token for keyless Google auth
+    steps:
+      # Keyless: federate GitHub's OIDC token to impersonate the Play publisher SA.
+      - name: Authenticate to Google Cloud (WIF)
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
+        with:
+          project_id: ${{ inputs.gcp-project }}
+          workload_identity_provider: ${{ inputs.wif-provider }}
+          service_account: ${{ inputs.wif-service-account }}
+
+      - name: Promote closed track → production
+        uses: Corey-Alan-Consulting/deploy-workflows/.github/actions/play-publish@v1
+        with:
+          mode: promote
+          package: ${{ inputs.package-name }}
+          from-track: ${{ inputs.from-track }}
+          to-track: ${{ inputs.to-track }}
+          rollout-percentage: ${{ inputs.rollout-percentage }}
+          expect-version: ${{ inputs.expect-version }}

@@ -616,6 +616,23 @@ jobs:
       bws-token-signing: ${{ secrets.BWS_TOKEN_SIGNING }}
 ```
 
+## Reusable Workflows — extension release & store-state sync
+
+`extension-release.yml` builds, signs a Verified CRX, and publishes a Chrome
+extension to the Web Store (keyless WIF; CRX signing key from Bitwarden). Firefox
+(AMO) is not covered — no reusable AMO publish exists to generalize yet.
+
+`sync-store-state.yml` (read-only, scheduled by the caller) polls live Google Play
++ App Store Connect release state and upserts one Port `mobileRelease` entity per
+`(service, platform, track)`, so the catalog reflects what is actually live — the
+read path that lets a submitted iOS version flip to "live" once Apple approves. Its
+`apps-json` input is a JSON array of `{service, android_package?, android_tracks?,
+ios_app_id?}` entries, so one workflow covers every app.
+
+`signing-secret-ids` NAMEs: Chrome → `CHROME_CRX_SIGNING_KEY_B64`; store-sync →
+`ASC_SUBMIT_ISSUER_ID` / `ASC_SUBMIT_KEY_ID` / `ASC_SUBMIT_PRIVATE_KEY_B64` (+ Port
+creds `PORT_CLIENT_ID` / `PORT_CLIENT_SECRET` via `port-secret-ids`).
+
 ## Renovate Preset
 
 Shared dependency-update policy for all repos. Reference it from each repo's

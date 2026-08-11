@@ -409,6 +409,7 @@ way as the reusable workflows (`@<sha> # v1.x.y`, or `@v1` inside this repo).
 
 | Action | Purpose |
 |--------|---------|
+| `desktop-build-setup` | The shared front half of every desktop release: checkout → Bitwarden secrets (two-project pattern) → pnpm + Node with the private registry → install-with-retry → Turbo remote cache → build → an app-specific `prebuild-command` hook (e.g. FFmpeg). A desktop workflow calls this, then does only its own signing + electron-builder + publish. |
 | `publish-desktop-feed` | Publish freshly built electron-builder artifacts to the **beta** channel of a Cloudflare R2 update feed (versioned binaries immutable at bucket root; `latest*.yml` renamed to `beta*.yml` no-cache; website installer staged for later promotion). Stable files are never touched — promotion is a separate approval-gated workflow. |
 | `play-publish` | Upload a signed AAB to a Google Play track (`mode: upload`) or promote a closed track to production (`mode: promote`). Auth is keyless Application Default Credentials — run `google-github-actions/auth` first. |
 | `verify-aab-alignment` | Fail the build if any `arm64-v8a` `.so` in an AAB/APK lacks 16 KB-aligned LOAD segments (Play targetSdk 35+ hard gate). Pure stdlib. |

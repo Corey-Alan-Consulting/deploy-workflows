@@ -20,3 +20,11 @@ rules:
       # npm 11.5.1+ is required for Trusted Publishing OIDC; setup-node ships
       # npm 10 with Node 22, so the global upgrade is unavoidable.
       - release.yml
+  use-trusted-publishing:
+    ignore:
+      # setup-node's always-auth + NODE_AUTH_TOKEN here authenticates to INSTALL
+      # private @corey-alan-consulting/* packages during pnpm install. Trusted
+      # Publishing is for publishing packages, not installing them, so it does
+      # not apply to this read-auth. (The desktop workflows don't trip this —
+      # their setup-node lives in the desktop-build-setup composite action.)
+      - android-release.yml

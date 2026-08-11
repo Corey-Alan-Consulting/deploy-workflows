@@ -1,0 +1,183 @@
+# Reusable Windows desktop release (electron-builder + Azure Trusted Signing + R2 feed).
+#
+# Keyless Authenticode: azure/login exchanges this run's GitHub OIDC token for an
+# Entra session as the trusted-signing app (federated credential in platform-infra
+# azure-signing.tf trusts the turbo-cache environment subject). No client secret.
+# Signing runs INSIDE electron-builder so latest.yml/.blockmap hash the signed
+# installer.
+#
+# CONVENTION — signing-secret-ids must map to these canonical env NAMEs:
+#   AZURE_TENANT_ID · AZURE_CLIENT_ID · AZURE_ENDPOINT
+#   AZURE_CODE_SIGNING_NAME · AZURE_CERT_PROFILE_NAME       (Trusted Signing)
+#   R2_ACCOUNT_ID · R2_ACCESS_KEY_ID · R2_SECRET_ACCESS_KEY  (update feed)
+
+name: Desktop release (Windows)
+
+on:
+  workflow_call:
+    inputs:
+      version:
+        required: false
+        type: string
+        default: ''
+      runner:
+        required: false
+        type: string
+        default: windows-latest
+      turbo-cache-environment:
+        required: false
+        type: string
+        default: turbo-cache
+      turbo-team:
+        required: true
+        type: string
+      turbo-api:
+        required: false
+        type: string
+        default: ''
+      app-directory:
+        required: false
+        type: string
+        default: apps/desktop
+      output-dir:
+        required: false
+        type: string
+        default: release
+      node-version:
+        required: false
+        type: string
+        default: '22'
+      build-command:
+        required: false
+        type: string
+        default: 'pnpm run build'
+      app-build-command:
+        required: false
+        type: string
+        default: 'pnpm build'
+      prebuild-command:
+        required: false
+        type: string
+        default: ''
+      electron-builder-args:
+        description: 'Extra args (the --win --x64 target + azureSignOptions are added automatically)'
+        required: false
+        type: string
+        default: ''
+      publisher-name:
+        description: 'Authenticode publisher display name, e.g. "Corey Alan LLC"'
+        required: true
+        type: string
+      azure-subscription-id:
+        description: 'Subscription id of the Trusted Signing account (non-secret)'
+        required: true
+        type: string
+      signing-secret-ids:
+        required: true
+        type: string
+      build-secret-ids:
+        required: false
+        type: string
+        default: ''
+      r2-bucket:
+        required: true
+        type: string
+      installer-basename:
+        description: 'Website installer basename, e.g. "Capturly" → Capturly-Setup-<version>.exe'
+        required: true
+        type: string
+      publish:
+        required: false
+        type: boolean
+        default: true
+    secrets:
+      bws-token-signing:
+        required: true
+      bws-token-build:
+        required: false
+      npm-token:
+        required: false
+      turbo-token:
+        required: false
+      turbo-signature-key:
+        required: false
+
+permissions:
+  contents: read
+  id-token: write # mint the GitHub OIDC token azure/login exchanges for keyless signing
+
+jobs:
+  build-windows:
+    name: Build Windows
+    runs-on: ${{ inputs.runner }}
+    environment: ${{ inputs.turbo-cache-environment }}
+    steps:
+      - name: Build scaffold (checkout, secrets, install, build, prebuild)
+        uses: Corey-Alan-Consulting/deploy-workflows/.github/actions/desktop-build-setup@v1
+        with:
+          node-version: ${{ inputs.node-version }}
+          build-command: ${{ inputs.build-command }}
+          prebuild-command: ${{ inputs.prebuild-command }}
+          signing-secret-ids: ${{ inputs.signing-secret-ids }}
+          build-secret-ids: ${{ inputs.build-secret-ids }}
+          turbo-api: ${{ inputs.turbo-api }}
+          turbo-team: ${{ inputs.turbo-team }}
+          bws-token-signing: ${{ secrets.bws-token-signing }}
+          bws-token-build: ${{ secrets.bws-token-build }}
+          npm-token: ${{ secrets.npm-token }}
+          turbo-token: ${{ secrets.turbo-token }}
+          turbo-signature-key: ${{ secrets.turbo-signature-key }}
+
+      # Exchange the GitHub OIDC token for an Entra session as the trusted-signing
+      # app. No AZURE_CLIENT_SECRET — the TrustedSigning module's credential chain
+      # falls through to this Azure CLI session.
+      - name: Azure login (OIDC, keyless signing)
+        uses: azure/login@f5d393ae46f8fde4be8b75f32e3fc50e654ad0ca # v3.0.1
+        with:
+          client-id: ${{ env.AZURE_CLIENT_ID }}
+          tenant-id: ${{ env.AZURE_TENANT_ID }}
+          subscription-id: ${{ inputs.azure-subscription-id }}
+
+      # Sign DURING the electron-builder run so latest.yml/.blockmap hash the
+      # signed installer. azureSignOptions are injected on the CLI (a partial
+      # block in package.json fails config validation on macOS). --publish never:
+      # artifacts go to the R2 feed below, not a GitHub release.
+      - name: Build & sign Windows app
+        working-directory: ${{ inputs.app-directory }}
+        shell: bash
+        env:
+          APP_BUILD_COMMAND: ${{ inputs.app-build-command }}
+          EXTRA_ARGS: ${{ inputs.electron-builder-args }}
+          PUBLISHER_NAME: ${{ inputs.publisher-name }}
+        run: |
+          set -euo pipefail
+          eval "$APP_BUILD_COMMAND"
+          ELECTRON_VERSION="$(node -p "require('electron/package.json').version")"
+          # AZURE_ENDPOINT / AZURE_CODE_SIGNING_NAME / AZURE_CERT_PROFILE_NAME are
+          # inherited from the signing-secret fetch.
+          # shellcheck disable=SC2086 # EXTRA_ARGS is intentionally word-split
+          pnpm exec electron-builder --win --x64 --publish never \
+            -c.electronVersion="$ELECTRON_VERSION" \
+            -c.win.azureSignOptions.publisherName="$PUBLISHER_NAME" \
+            -c.win.azureSignOptions.endpoint="$AZURE_ENDPOINT" \
+            -c.win.azureSignOptions.codeSigningAccountName="$AZURE_CODE_SIGNING_NAME" \
+            -c.win.azureSignOptions.certificateProfileName="$AZURE_CERT_PROFILE_NAME" $EXTRA_ARGS
+
+      - name: Upload Windows installer
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: windows-installer
+          path: ${{ inputs.app-directory }}/${{ inputs.output-dir }}/*.exe
+          retention-days: 30
+
+      - name: Publish to R2 update feed (beta channel)
+        if: ${{ inputs.publish }}
+        uses: Corey-Alan-Consulting/deploy-workflows/.github/actions/publish-desktop-feed@v1
+        with:
+          platform: win
+          bucket: ${{ inputs.r2-bucket }}
+          installer-basename: ${{ inputs.installer-basename }}
+          working-directory: ${{ inputs.app-directory }}/${{ inputs.output-dir }}
+          r2-account-id: ${{ env.R2_ACCOUNT_ID }}
+          r2-access-key-id: ${{ env.R2_ACCESS_KEY_ID }}
+          r2-secret-access-key: ${{ env.R2_SECRET_ACCESS_KEY }}

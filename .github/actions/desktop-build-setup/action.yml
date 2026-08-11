@@ -1,0 +1,163 @@
+name: Desktop build setup
+description: >
+  The shared front half of every desktop release workflow: checkout, fetch
+  Bitwarden secrets (two-project pattern), set up pnpm + Node with the private
+  registry, install with retry, wire the Turbo remote cache, build the workspace,
+  then run an app-specific prebuild hook (e.g. download/lipo FFmpeg). The calling
+  workflow does only its own signing + electron-builder + publish after this.
+
+  Secrets fetched here are exported to the job env (sm-action writes GITHUB_ENV),
+  so the caller's later steps see them by the names given in *-secret-ids. The
+  turbo-cache GitHub Environment gate stays on the calling job, not here.
+
+inputs:
+  node-version:
+    description: 'Node.js version'
+    required: false
+    default: '22'
+  npm-scope:
+    description: 'Private npm scope for setup-node auth'
+    required: false
+    default: '@corey-alan-consulting'
+  npm-registry:
+    description: 'npm registry URL'
+    required: false
+    default: 'https://registry.npmjs.org'
+  build-command:
+    description: 'Workspace build command'
+    required: false
+    default: 'pnpm run build'
+  prebuild-command:
+    description: >
+      Optional app-specific shell run after the build, at the repo root — e.g.
+      download + lipo FFmpeg, mirror GPL sources. Empty = skipped.
+    required: false
+    default: ''
+  signing-secret-ids:
+    description: >
+      bitwarden/sm-action mapping (one "<uuid> > NAME" per line) fetched with the
+      signing token. Empty = skip the signing fetch.
+    required: false
+    default: ''
+  build-secret-ids:
+    description: >
+      bitwarden/sm-action mapping fetched with the build token (e.g. LICENSE_JWKS,
+      SENTRY_AUTH_TOKEN). Empty = skip the build fetch.
+    required: false
+    default: ''
+  turbo-api:
+    description: 'Turbo remote-cache base URL (org var TURBO_API)'
+    required: false
+    default: ''
+  turbo-team:
+    description: 'Per-app Turbo cache namespace'
+    required: true
+  # --- tokens (secrets, passed through from the calling workflow) ---
+  bws-token-signing:
+    description: 'Bitwarden Secrets Manager token for the signing project'
+    required: false
+    default: ''
+  bws-token-build:
+    description: 'Bitwarden Secrets Manager token for the app/build project'
+    required: false
+    default: ''
+  npm-token:
+    description: 'npm read token for installing private scoped packages'
+    required: false
+    default: ''
+  turbo-token:
+    description: 'Turbo remote-cache bearer token; empty = local cache only'
+    required: false
+    default: ''
+  turbo-signature-key:
+    description: 'Turbo cache artifact HMAC signature key'
+    required: false
+    default: ''
+
+runs:
+  using: composite
+  steps:
+    - name: Checkout code
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      with:
+        persist-credentials: false
+
+    # Two tokens on purpose: the signing machine account sees only the signing
+    # BWS project, so app secrets come from the build token. Mixing projects
+    # under one token 404s the whole fetch. Either fetch is skippable for apps
+    # that use a single project.
+    - name: Get signing secrets from Bitwarden
+      if: ${{ inputs.signing-secret-ids != '' }}
+      uses: bitwarden/sm-action@1238aae8fc64b212641190a9227c8a734ab1a793 # v3.0.1
+      with:
+        access_token: ${{ inputs.bws-token-signing }}
+        secrets: ${{ inputs.signing-secret-ids }}
+
+    - name: Get app secrets from Bitwarden
+      if: ${{ inputs.build-secret-ids != '' }}
+      uses: bitwarden/sm-action@1238aae8fc64b212641190a9227c8a734ab1a793 # v3.0.1
+      with:
+        access_token: ${{ inputs.bws-token-build }}
+        secrets: ${{ inputs.build-secret-ids }}
+
+    - name: Setup pnpm
+      uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
+
+    - name: Setup Node.js
+      uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      with:
+        node-version: ${{ inputs.node-version }}
+        # No dependency cache: this workflow publishes release artifacts, and a
+        # poisoned cache entry would flow into them.
+        package-manager-cache: false
+        registry-url: ${{ inputs.npm-registry }}
+        scope: ${{ inputs.npm-scope }}
+        always-auth: true
+
+    # Retry: @prisma/engines postinstall fetches engine binaries over the network
+    # and intermittently aborts. Reinstall is idempotent under a frozen lockfile,
+    # so retry with backoff before failing the build. shell: bash so the loop runs
+    # the same on the Windows runner (Git Bash), not the pwsh default.
+    - name: Install dependencies
+      shell: bash
+      env:
+        NODE_AUTH_TOKEN: ${{ inputs.npm-token }}
+      run: |
+        attempt=1
+        max=3
+        until pnpm install --frozen-lockfile; do
+          if [ "$attempt" -ge "$max" ]; then
+            echo "pnpm install failed after ${max} attempts"
+            exit 1
+          fi
+          echo "pnpm install failed (attempt ${attempt}/${max}), retrying in $((attempt * 15))s…"
+          sleep $((attempt * 15))
+          attempt=$((attempt + 1))
+        done
+
+    # Trusted build: read+write the shared remote cache (no-op without a token).
+    - name: Setup turbo remote cache
+      uses: Corey-Alan-Consulting/deploy-workflows/.github/actions/setup-turbo-cache@v1
+      with:
+        turbo_api: ${{ inputs.turbo-api }}
+        turbo_team: ${{ inputs.turbo-team }}
+        turbo_token: ${{ inputs.turbo-token }}
+        signature_key: ${{ inputs.turbo-signature-key }}
+
+    # Tests already ran on main before this tag was cut (build-once-promote); the
+    # build below still fails on a broken build. BWS app secrets (LICENSE_JWKS,
+    # etc.) are already in the env from the fetch steps above.
+    - name: Build packages
+      shell: bash
+      # Command via env + eval, never interpolated into the run template
+      # (avoids the ${{ }}-in-run template-injection class).
+      env:
+        BUILD_COMMAND: ${{ inputs.build-command }}
+      run: eval "$BUILD_COMMAND"
+
+    - name: Prebuild hook (app-specific)
+      if: ${{ inputs.prebuild-command != '' }}
+      shell: bash
+      env:
+        PREBUILD_COMMAND: ${{ inputs.prebuild-command }}
+      run: eval "$PREBUILD_COMMAND"

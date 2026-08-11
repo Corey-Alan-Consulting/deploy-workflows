@@ -400,6 +400,53 @@ jobs:
 > `deploy-workflows` / `release.yml`. **Verify the publish on one repo before
 > rolling this out fleet-wide.**
 
+## Composite Actions — native & mobile release primitives
+
+Building blocks for cross-platform (desktop / mobile) release pipelines. These
+are the shared leaves the forthcoming reusable native-release workflows call;
+they can also be used directly from an app repo today. Each is pinned the same
+way as the reusable workflows (`@<sha> # v1.x.y`, or `@v1` inside this repo).
+
+| Action | Purpose |
+|--------|---------|
+| `publish-desktop-feed` | Publish freshly built electron-builder artifacts to the **beta** channel of a Cloudflare R2 update feed (versioned binaries immutable at bucket root; `latest*.yml` renamed to `beta*.yml` no-cache; website installer staged for later promotion). Stable files are never touched — promotion is a separate approval-gated workflow. |
+| `play-publish` | Upload a signed AAB to a Google Play track (`mode: upload`) or promote a closed track to production (`mode: promote`). Auth is keyless Application Default Credentials — run `google-github-actions/auth` first. |
+| `verify-aab-alignment` | Fail the build if any `arm64-v8a` `.so` in an AAB/APK lacks 16 KB-aligned LOAD segments (Play targetSdk 35+ hard gate). Pure stdlib. |
+| `asc-submit` | Attach a processed TestFlight build to an App Store version and submit for App Review via the App Store Connect API. The iOS build itself is produced elsewhere (e.g. Xcode Cloud). |
+
+Signing **identities** stay per-app: pass them in (R2 creds, Play package + WIF
+service account, App Store Connect key). The actions carry only the shared
+**mechanism**, never an app's credentials or identifiers.
+
+```yaml
+# Android: build → verify → upload to the alpha track, then (gated) promote
+- uses: google-github-actions/auth@… # keyless WIF; no SA key
+  with:
+    workload_identity_provider: ${{ inputs.wif_provider }}
+    service_account: ${{ inputs.wif_sa }}
+- uses: Corey-Alan-Consulting/deploy-workflows/.github/actions/verify-aab-alignment@v1
+  with:
+    bundle: android/app/build/outputs/bundle/release/app-release.aab
+- uses: Corey-Alan-Consulting/deploy-workflows/.github/actions/play-publish@v1
+  with:
+    mode: upload
+    package: com.example.app
+    aab: android/app/build/outputs/bundle/release/app-release.aab
+    track: alpha
+```
+
+```yaml
+# Desktop: after electron-builder --mac/--win --publish never
+- uses: Corey-Alan-Consulting/deploy-workflows/.github/actions/publish-desktop-feed@v1
+  with:
+    platform: mac              # or win
+    bucket: example-updates
+    installer-basename: Example
+    r2-account-id: ${{ env.R2_ACCOUNT_ID }}
+    r2-access-key-id: ${{ env.R2_ACCESS_KEY_ID }}
+    r2-secret-access-key: ${{ env.R2_SECRET_ACCESS_KEY }}
+```
+
 ## Renovate Preset
 
 Shared dependency-update policy for all repos. Reference it from each repo's

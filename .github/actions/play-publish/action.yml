@@ -1,0 +1,102 @@
+name: Play publish
+description: >
+  Upload a signed AAB to a Google Play track, or promote a closed track to
+  production, via the androidpublisher API. Auth is Application Default
+  Credentials — run google-github-actions/auth (keyless WIF) in the caller
+  before this action; org policy forbids downloaded SA keys.
+
+inputs:
+  mode:
+    description: 'upload (push an AAB to a track) or promote (closed track -> production)'
+    required: true
+  package:
+    description: 'applicationId, e.g. com.example.app'
+    required: true
+  python-version:
+    description: 'Python version for the publisher client'
+    required: false
+    default: '3.12'
+  # --- upload mode ---
+  aab:
+    description: 'upload: path to the signed .aab'
+    required: false
+    default: ''
+  track:
+    description: 'upload: destination Play track (alpha | internal | production | ...)'
+    required: false
+    default: alpha
+  status:
+    description: 'upload: release status (completed | draft | inProgress | halted)'
+    required: false
+    default: completed
+  user-fraction:
+    description: 'upload: staged-rollout fraction; required by Play for inProgress/halted'
+    required: false
+    default: ''
+  # --- promote mode ---
+  from-track:
+    description: 'promote: source closed track'
+    required: false
+    default: alpha
+  to-track:
+    description: 'promote: destination track'
+    required: false
+    default: production
+  rollout-percentage:
+    description: 'promote: production rollout percent 1-100 (100 = full release)'
+    required: false
+    default: '100'
+  expect-version:
+    description: 'promote: assert the source release name contains this marketing version'
+    required: false
+    default: ''
+
+runs:
+  using: composite
+  steps:
+    - name: Setup Python
+      uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+      with:
+        python-version: ${{ inputs.python-version }}
+
+    - name: Install Play publisher deps
+      shell: bash
+      run: pip install --quiet google-api-python-client google-auth google-auth-httplib2 httplib2
+
+    - name: Publish to Google Play
+      shell: bash
+      env:
+        MODE: ${{ inputs.mode }}
+        PACKAGE: ${{ inputs.package }}
+        AAB: ${{ inputs.aab }}
+        TRACK: ${{ inputs.track }}
+        STATUS: ${{ inputs.status }}
+        USER_FRACTION: ${{ inputs.user-fraction }}
+        FROM_TRACK: ${{ inputs.from-track }}
+        TO_TRACK: ${{ inputs.to-track }}
+        ROLLOUT: ${{ inputs.rollout-percentage }}
+        EXPECT_VERSION: ${{ inputs.expect-version }}
+      run: |
+        set -euo pipefail
+        case "$MODE" in
+          upload)
+            if [ -z "$AAB" ]; then
+              echo "::error::play-publish: 'aab' is required in upload mode"; exit 1
+            fi
+            args=( --package "$PACKAGE" --aab "$AAB" --track "$TRACK" --status "$STATUS" )
+            if [ -n "$USER_FRACTION" ]; then
+              args+=( --user-fraction "$USER_FRACTION" )
+            fi
+            python3 "$GITHUB_ACTION_PATH/play-upload.py" "${args[@]}"
+            ;;
+          promote)
+            args=( --package "$PACKAGE" --from-track "$FROM_TRACK" --to-track "$TO_TRACK" --rollout-percentage "$ROLLOUT" )
+            if [ -n "$EXPECT_VERSION" ]; then
+              args+=( --expect-version "$EXPECT_VERSION" )
+            fi
+            python3 "$GITHUB_ACTION_PATH/play-promote.py" "${args[@]}"
+            ;;
+          *)
+            echo "::error::play-publish: unknown mode '$MODE' (want upload|promote)"; exit 1
+            ;;
+        esac

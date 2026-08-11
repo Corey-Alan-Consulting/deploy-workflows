@@ -1,0 +1,96 @@
+name: Publish desktop update feed (beta)
+description: >
+  Publish freshly built desktop artifacts to the BETA channel on a Cloudflare
+  R2 update feed. Versioned binaries are uploaded to the bucket root (immutable);
+  the electron-builder manifest (latest*.yml) is renamed to beta*.yml and uploaded
+  no-cache so beta-opted clients discover it; the website installer is staged under
+  staging/<version>/ so a promote workflow can later copy it to the stable download
+  alias. Stable feed files (latest*.yml and the website download aliases) are never
+  touched here — promotion to stable is a separate, approval-gated workflow.
+
+inputs:
+  platform:
+    description: 'Target platform: mac or win'
+    required: true
+  r2-account-id:
+    description: 'Cloudflare R2 account id'
+    required: true
+  r2-access-key-id:
+    description: 'R2 access key id'
+    required: true
+  r2-secret-access-key:
+    description: 'R2 secret access key'
+    required: true
+  bucket:
+    description: 'R2 bucket name'
+    required: true
+  installer-basename:
+    description: >
+      Unversioned website installer alias basename, minus extension (e.g. "Capturly").
+      mac stages "<basename>-universal.dmg"; win publishes "<basename>-Setup-<version>.exe".
+    required: true
+  working-directory:
+    description: 'Directory containing the electron-builder output'
+    required: false
+    default: apps/desktop/release
+
+runs:
+  using: composite
+  steps:
+    - name: Publish to R2 (beta channel)
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      env:
+        AWS_ACCESS_KEY_ID: ${{ inputs.r2-access-key-id }}
+        AWS_SECRET_ACCESS_KEY: ${{ inputs.r2-secret-access-key }}
+        AWS_DEFAULT_REGION: auto
+        R2_ENDPOINT: https://${{ inputs.r2-account-id }}.r2.cloudflarestorage.com
+        BUCKET: ${{ inputs.bucket }}
+        PLATFORM: ${{ inputs.platform }}
+        INSTALLER: ${{ inputs.installer-basename }}
+      run: |
+        set -euo pipefail
+        IMMUTABLE="public, max-age=31536000, immutable"
+
+        case "$PLATFORM" in
+          mac) STABLE_MANIFEST=latest-mac.yml; BETA_MANIFEST=beta-mac.yml ;;
+          win) STABLE_MANIFEST=latest.yml;     BETA_MANIFEST=beta.yml ;;
+          *) echo "Unknown platform '$PLATFORM' (want mac|win)"; exit 1 ;;
+        esac
+
+        if [ ! -f "$STABLE_MANIFEST" ]; then
+          echo "Expected manifest '$STABLE_MANIFEST' not found in $(pwd)"; exit 1
+        fi
+
+        # electron-builder writes the channel-neutral version into the manifest.
+        VERSION="$(grep -m1 '^version:' "$STABLE_MANIFEST" | sed 's/^version:[[:space:]]*//' | tr -d '\r')"
+        if [ -z "$VERSION" ]; then
+          echo "Could not read version from '$STABLE_MANIFEST'"; exit 1
+        fi
+        echo "Publishing $PLATFORM v$VERSION to the BETA channel"
+
+        s3() { aws s3 "$@" --endpoint-url "$R2_ENDPOINT"; }
+
+        # 1) Immutable versioned binaries -> bucket root (shared by beta and,
+        #    once promoted, the stable manifest — they carry unique per-version
+        #    names so they never clobber a prior release).
+        if [ "$PLATFORM" = "mac" ]; then
+          s3 cp . "s3://$BUCKET/" --recursive --exclude "*" \
+            --include "*.zip" --include "*.zip.blockmap" --cache-control "$IMMUTABLE"
+          # Stage the (unversioned) website DMG for promotion; do NOT overwrite
+          # the live stable "<installer>-universal.dmg" with a beta build.
+          s3 cp "${INSTALLER}-universal.dmg" \
+            "s3://$BUCKET/staging/$VERSION/${INSTALLER}-universal.dmg" \
+            --cache-control "$IMMUTABLE"
+        else
+          s3 cp . "s3://$BUCKET/" --recursive --exclude "*" \
+            --include "${INSTALLER}-Setup-*.exe" --include "${INSTALLER}-Setup-*.exe.blockmap" \
+            --cache-control "$IMMUTABLE"
+        fi
+
+        # 2) Beta manifest (channel-neutral body, renamed from latest*.yml).
+        #    no-cache: the updater polls it and must never see a stale copy.
+        cp "$STABLE_MANIFEST" "$BETA_MANIFEST"
+        s3 cp "$BETA_MANIFEST" "s3://$BUCKET/$BETA_MANIFEST" --cache-control "no-cache"
+
+        echo "Beta channel now serves $PLATFORM v$VERSION ($BETA_MANIFEST)"

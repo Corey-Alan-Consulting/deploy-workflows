@@ -181,15 +181,17 @@ jobs:
           github_token: ${{ github.token }}
 
       # Open the approval run AS platform-admin@ — the promotion-gate
-      # pattern. An org token is required for run_as; the creds are the
-      # same Platform Infrastructure pair sync-store-state reads.
+      # pattern. An org token is required for run_as. The ids are the
+      # "Port Actions" project's copy of the Port credential pair, so the
+      # BWS_TOKEN_PLATFORM machine account reads ONLY that tiny project —
+      # never Platform Infrastructure.
       - name: Load Port API creds from Bitwarden
         uses: bitwarden/sm-action@1238aae8fc64b212641190a9227c8a734ab1a793 # v3.0.1
         with:
           access_token: ${{ secrets.BWS_TOKEN_PLATFORM }}
           secrets: |
-            856c240c-a6cb-4ddd-9e78-b4950103a55a > PORT_CLIENT_ID
-            7530bead-5bee-4fdc-8ce2-b4950103ce59 > PORT_CLIENT_SECRET
+            d8bd8a0f-0853-4434-837b-b4a3002a4ed4 > PORT_CLIENT_ID
+            0ab68808-64c7-403e-a1e6-b4a3002a5166 > PORT_CLIENT_SECRET
 
       - name: Open Port approval run (run_as platform-admin@)
         env:

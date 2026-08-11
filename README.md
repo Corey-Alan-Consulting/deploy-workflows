@@ -580,6 +580,42 @@ jobs:
       bws-token-signing: ${{ secrets.BWS_TOKEN_SIGNING }}
 ```
 
+## Reusable Workflows — promotion gates
+
+`promote-desktop.yml` and `promote-android.yml` graduate an already-published build
+to everyone — the desktop/Android analogs of merging the prod digest PR. Both do
+**no rebuild** and are **actor-locked to the Port GitHub App** (`port-actor-id`)
+with a `dispatch-guard`, so they run only after a Port approval; direct dispatch is
+refused.
+
+- **`promote-desktop`** rewrites the stable R2 manifests (`latest.yml` /
+  `latest-mac.yml`) to the promoted version and refreshes the website download
+  aliases. Rollback = re-run with the previous version; ramp = re-run at a higher
+  `staging-percentage`. Needs `R2_ACCOUNT_ID` / `R2_ACCESS_KEY_ID` /
+  `R2_SECRET_ACCESS_KEY` in `signing-secret-ids`.
+- **`promote-android`** re-releases the versionCodes on a closed track to
+  production via `play-publish` (promote mode), keyless WIF. Optional
+  `expect-version` asserts the source release name before promoting.
+
+```yaml
+# dispatched by the Port promote_desktop_release action, after approval
+jobs:
+  promote:
+    uses: Corey-Alan-Consulting/deploy-workflows/.github/workflows/promote-desktop.yml@v1
+    with:
+      version: ${{ inputs.version }}
+      staging-percentage: ${{ inputs.staging_percentage }}
+      r2-bucket: example-updates
+      installer-basename: Example
+      port-actor-id: '310211542'
+      signing-secret-ids: |
+        66666666-... > R2_ACCOUNT_ID
+        77777777-... > R2_ACCESS_KEY_ID
+        88888888-... > R2_SECRET_ACCESS_KEY
+    secrets:
+      bws-token-signing: ${{ secrets.BWS_TOKEN_SIGNING }}
+```
+
 ## Renovate Preset
 
 Shared dependency-update policy for all repos. Reference it from each repo's

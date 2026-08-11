@@ -1,0 +1,28 @@
+name: Verify AAB 16KB alignment
+description: >
+  Fail the build if any arm64-v8a .so inside an AAB/APK lacks 16KB-aligned LOAD
+  segments. Google Play hard gate (Nov 2025) for targetSdk 35+. Pure stdlib —
+  no pip install needed.
+
+inputs:
+  bundle:
+    description: 'Path to the .aab or .apk to check'
+    required: true
+  python-version:
+    description: 'Python version'
+    required: false
+    default: '3.12'
+
+runs:
+  using: composite
+  steps:
+    - name: Setup Python
+      uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+      with:
+        python-version: ${{ inputs.python-version }}
+
+    - name: Check ELF alignment
+      shell: bash
+      env:
+        BUNDLE: ${{ inputs.bundle }}
+      run: python3 "$GITHUB_ACTION_PATH/check-elf-alignment.py" "$BUNDLE"

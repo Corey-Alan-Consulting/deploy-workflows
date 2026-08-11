@@ -1,0 +1,77 @@
+name: Submit iOS build to App Store
+description: >
+  Attach a processed TestFlight build to an App Store version and submit it for
+  App Review via the App Store Connect API. The iOS build+sign itself is produced
+  elsewhere (e.g. Xcode Cloud) and delivered to TestFlight; this action is the
+  submit gate. Provide an App Store Connect API key with the App Manager role.
+  The private key is the decoded .p8 PEM contents (the caller decodes any base64).
+
+inputs:
+  app-id:
+    description: 'App Store Connect app id (numeric)'
+    required: true
+  version:
+    description: 'App Store marketing version to submit (must match the TestFlight build)'
+    required: true
+  build-number:
+    description: 'TestFlight build to attach; blank = latest processed build for the version'
+    required: false
+    default: ''
+  phased-release:
+    description: 'Enable Apple 7-day phased rollout once approved'
+    required: false
+    default: 'true'
+  auto-release:
+    description: 'Release automatically after approval (false holds for manual release)'
+    required: false
+    default: 'true'
+  asc-issuer-id:
+    description: 'App Store Connect issuer id'
+    required: true
+  asc-key-id:
+    description: 'App Store Connect API key id'
+    required: true
+  asc-private-key:
+    description: 'App Store Connect API private key — decoded .p8 PEM contents'
+    required: true
+  python-version:
+    description: 'Python version'
+    required: false
+    default: '3.12'
+
+runs:
+  using: composite
+  steps:
+    - name: Setup Python
+      uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+      with:
+        python-version: ${{ inputs.python-version }}
+
+    - name: Install App Store Connect deps
+      shell: bash
+      run: pip install --quiet 'pyjwt[crypto]' requests
+
+    - name: Submit to App Store
+      shell: bash
+      env:
+        ASC_ISSUER_ID: ${{ inputs.asc-issuer-id }}
+        ASC_KEY_ID: ${{ inputs.asc-key-id }}
+        ASC_PRIVATE_KEY: ${{ inputs.asc-private-key }}
+        APP_ID: ${{ inputs.app-id }}
+        VERSION: ${{ inputs.version }}
+        BUILD_NUMBER: ${{ inputs.build-number }}
+        PHASED: ${{ inputs.phased-release }}
+        AUTO_RELEASE: ${{ inputs.auto-release }}
+      run: |
+        set -euo pipefail
+        args=( --app-id "$APP_ID" --version "$VERSION" )
+        if [ -n "$BUILD_NUMBER" ]; then
+          args+=( --build-number "$BUILD_NUMBER" )
+        fi
+        if [ "$PHASED" = "true" ]; then
+          args+=( --phased-release )
+        fi
+        if [ "$AUTO_RELEASE" = "true" ]; then
+          args+=( --auto-release )
+        fi
+        python3 "$GITHUB_ACTION_PATH/asc-submit.py" "${args[@]}"

@@ -65,13 +65,6 @@ on:
         description: Bitwarden secret id of the brand's sk_live_* release key (per-brand — its source binding selects the tenant).
         type: string
         required: true
-      anthropic_secret_id:
-        description: >-
-          DEPRECATED, ignored. The editorial pass authenticates via workload
-          identity federation (keyless); the input is kept only so existing
-          callers don't break and will be removed once they stop passing it.
-        type: string
-        default: ''
     secrets:
       BWS_TOKEN_BUILD:
         description: Bitwarden machine token that can read the release-key secret.

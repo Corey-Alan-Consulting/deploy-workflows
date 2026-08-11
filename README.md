@@ -509,6 +509,77 @@ Windows adds `publisher-name` + `azure-subscription-id` and needs
 required `version` (stamped into `snapcraft.yaml`) and a `snap-channel`. Set
 `publish` from the tag check so PR/dispatch dry-runs build without publishing.
 
+## Reusable Workflows — mobile release
+
+`android-release.yml` builds a signed AAB and uploads it to a Google Play track
+(keyless WIF). `ios-submit.yml` is the App Store submit gate — the iOS build
+itself is produced by Xcode Cloud and delivered to TestFlight; this workflow
+graduates a TestFlight build to App Review, **actor-locked to the Port GitHub
+App** so it runs only after a Port approval.
+
+`signing-secret-ids` NAMEs:
+
+| Workflow | Required NAMEs |
+|----------|----------------|
+| Android | `ANDROID_KEYSTORE_BASE64`, `ANDROID_KEYSTORE_PASSWORD`, `ANDROID_KEY_ALIAS`, `ANDROID_KEY_PASSWORD` |
+| iOS submit | `ASC_SUBMIT_ISSUER_ID`, `ASC_SUBMIT_KEY_ID`, `ASC_SUBMIT_PRIVATE_KEY_B64` |
+
+```yaml
+# .github/workflows/release-android.yml  (in the app repo)
+name: Release Android
+on:
+  push:
+    tags: ['@example/mobile@*']
+
+jobs:
+  android:
+    uses: Corey-Alan-Consulting/deploy-workflows/.github/workflows/android-release.yml@v1
+    with:
+      package-name: com.example.app
+      gcp-project: example-app
+      wif-provider: projects/123/locations/global/workloadIdentityPools/github-actions/providers/github
+      wif-service-account: play-publisher-ci@example-app.iam.gserviceaccount.com
+      workspace-build-filter: '@example/mobile^...'
+      forbidden-manifest-permissions: 'AD_ID|READ_MEDIA_IMAGES|READ_MEDIA_VIDEO'
+      track: alpha
+      signing-secret-ids: |
+        aaaaaaaa-... > ANDROID_KEYSTORE_BASE64
+        bbbbbbbb-... > ANDROID_KEYSTORE_PASSWORD
+        cccccccc-... > ANDROID_KEY_ALIAS
+        dddddddd-... > ANDROID_KEY_PASSWORD
+      build-secret-ids: |
+        eeeeeeee-... > SENTRY_AUTH_TOKEN
+    secrets:
+      bws-token-signing: ${{ secrets.BWS_TOKEN_SIGNING }}
+      bws-token-build: ${{ secrets.BWS_TOKEN_BUILD }}
+      npm-token: ${{ secrets.NPM_TOKEN }}
+```
+
+```yaml
+# .github/workflows/submit-ios.yml  (dispatched by the Port submit action)
+name: Submit iOS to App Store
+on:
+  workflow_dispatch:
+    inputs:
+      version: { required: true, type: string }
+      build_number: { required: false, type: string }
+
+jobs:
+  submit:
+    uses: Corey-Alan-Consulting/deploy-workflows/.github/workflows/ios-submit.yml@v1
+    with:
+      app-id: '6757610356'
+      version: ${{ inputs.version }}
+      build-number: ${{ inputs.build_number }}
+      port-actor-id: '310211542'   # port-corey-alan-consulting[bot]
+      signing-secret-ids: |
+        ffffffff-... > ASC_SUBMIT_ISSUER_ID
+        11111111-... > ASC_SUBMIT_KEY_ID
+        22222222-... > ASC_SUBMIT_PRIVATE_KEY_B64
+    secrets:
+      bws-token-signing: ${{ secrets.BWS_TOKEN_SIGNING }}
+```
+
 ## Renovate Preset
 
 Shared dependency-update policy for all repos. Reference it from each repo's

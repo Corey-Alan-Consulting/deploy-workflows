@@ -1,0 +1,96 @@
+# Reusable iOS App Store submit gate.
+#
+# Xcode Cloud builds, signs, and delivers each release to TestFlight (the iOS
+# build path is deliberately off-workflow). This is the human gate that graduates
+# a TestFlight build to the public App Store, dispatched by a Port self-service
+# action after approval.
+#
+# GATE: approval is enforced in Port (required_approval + self-approval-exclusion).
+# This workflow is actor-locked to the Port GitHub App (pass its immutable numeric
+# account id as port-actor-id) so it runs only after that approval; direct dispatch
+# is refused. Actor id, not login — logins are renameable/re-registrable.
+#
+# CONVENTION — signing-secret-ids must map to:
+#   ASC_SUBMIT_ISSUER_ID · ASC_SUBMIT_KEY_ID · ASC_SUBMIT_PRIVATE_KEY_B64
+# (an App Store Connect API key with the App Manager role).
+
+name: Submit iOS to App Store
+
+on:
+  workflow_call:
+    inputs:
+      app-id:
+        description: 'App Store Connect app id (numeric)'
+        required: true
+        type: string
+      version:
+        description: 'App Store marketing version to submit (must match the TestFlight build)'
+        required: true
+        type: string
+      build-number:
+        description: 'TestFlight build to attach; blank = latest processed for the version'
+        required: false
+        type: string
+        default: ''
+      phased-release:
+        required: false
+        type: boolean
+        default: true
+      auto-release:
+        required: false
+        type: boolean
+        default: true
+      port-actor-id:
+        description: 'Immutable numeric account id of the Port GitHub App (the only allowed dispatcher)'
+        required: true
+        type: string
+      signing-secret-ids:
+        required: true
+        type: string
+    secrets:
+      bws-token-signing:
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  # Loud refusal for a direct (non-Port) dispatch; requests no secrets so a bypass
+  # attempt gains nothing. triggering_actor==actor also refuses re-runs by anyone
+  # other than the original dispatcher.
+  dispatch-guard:
+    name: Enforce Port-only dispatch
+    if: ${{ github.actor_id != inputs.port-actor-id || github.triggering_actor != github.actor }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Refuse direct dispatch
+        env:
+          ACTOR: ${{ github.triggering_actor }}
+        run: |
+          echo "::error::This submission runs only via the Port App Store action after approval (dispatcher was '$ACTOR'). Run it in Port and approve; direct dispatch is refused."
+          exit 1
+
+  submit:
+    name: Submit for App Review
+    if: ${{ github.actor_id == inputs.port-actor-id && github.triggering_actor == github.actor }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Load App Store Connect key from Bitwarden
+        uses: bitwarden/sm-action@1238aae8fc64b212641190a9227c8a734ab1a793 # v3.0.1
+        with:
+          access_token: ${{ secrets.bws-token-signing }}
+          secrets: ${{ inputs.signing-secret-ids }}
+
+      - name: Submit to App Store
+        uses: Corey-Alan-Consulting/deploy-workflows/.github/actions/asc-submit@v1
+        with:
+          app-id: ${{ inputs.app-id }}
+          version: ${{ inputs.version }}
+          build-number: ${{ inputs.build-number }}
+          phased-release: ${{ inputs.phased-release }}
+          auto-release: ${{ inputs.auto-release }}
+          asc-issuer-id: ${{ env.ASC_SUBMIT_ISSUER_ID }}
+          asc-key-id: ${{ env.ASC_SUBMIT_KEY_ID }}
+          asc-private-key-base64: ${{ env.ASC_SUBMIT_PRIVATE_KEY_B64 }}

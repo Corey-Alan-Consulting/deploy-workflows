@@ -31,8 +31,11 @@ inputs:
   asc-key-id:
     description: 'App Store Connect API key id'
     required: true
-  asc-private-key:
-    description: 'App Store Connect API private key — decoded .p8 PEM contents'
+  asc-private-key-base64:
+    description: >
+      App Store Connect API private key (.p8) as base64. Kept base64 across the
+      action boundary (sm-action masks it) and decoded to PEM only inside the
+      submit step's process env, so the PEM never transits an action input.
     required: true
   python-version:
     description: 'Python version'
@@ -56,7 +59,7 @@ runs:
       env:
         ASC_ISSUER_ID: ${{ inputs.asc-issuer-id }}
         ASC_KEY_ID: ${{ inputs.asc-key-id }}
-        ASC_PRIVATE_KEY: ${{ inputs.asc-private-key }}
+        ASC_PRIVATE_KEY_B64: ${{ inputs.asc-private-key-base64 }}
         APP_ID: ${{ inputs.app-id }}
         VERSION: ${{ inputs.version }}
         BUILD_NUMBER: ${{ inputs.build-number }}
@@ -64,6 +67,9 @@ runs:
         AUTO_RELEASE: ${{ inputs.auto-release }}
       run: |
         set -euo pipefail
+        # Decode to PEM only here; asc-submit.py reads ASC_PRIVATE_KEY from env.
+        ASC_PRIVATE_KEY="$(printf '%s' "$ASC_PRIVATE_KEY_B64" | base64 -d)"
+        export ASC_PRIVATE_KEY
         args=( --app-id "$APP_ID" --version "$VERSION" )
         if [ -n "$BUILD_NUMBER" ]; then
           args+=( --build-number "$BUILD_NUMBER" )

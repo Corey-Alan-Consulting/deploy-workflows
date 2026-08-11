@@ -1,0 +1,268 @@
+# Reusable Android release (signed AAB → Google Play track, keyless WIF).
+#
+# The caller keeps its `on: push: tags:` trigger and passes the config. This
+# workflow: install → build workspace deps → gradle bundleRelease (signed from a
+# keystore in Bitwarden) → 16KB-alignment gate → optional merged-manifest policy
+# check → upload AAB → keyless Play upload (WIF; org policy forbids SA keys).
+#
+# CONVENTION — signing-secret-ids must map to these canonical env NAMEs:
+#   ANDROID_KEYSTORE_BASE64 · ANDROID_KEYSTORE_PASSWORD
+#   ANDROID_KEY_ALIAS · ANDROID_KEY_PASSWORD
+# build-secret-ids (optional) e.g. SENTRY_AUTH_TOKEN for sourcemap upload.
+
+name: Android release
+
+on:
+  workflow_call:
+    inputs:
+      package-name:
+        description: 'applicationId, e.g. com.example.app'
+        required: true
+        type: string
+      app-directory:
+        required: false
+        type: string
+        default: apps/mobile
+      runner:
+        required: false
+        type: string
+        default: ubuntu-latest
+      node-version:
+        required: false
+        type: string
+        default: '22'
+      npm-scope:
+        required: false
+        type: string
+        default: '@corey-alan-consulting'
+      java-version:
+        required: false
+        type: string
+        default: '17'
+      java-distribution:
+        required: false
+        type: string
+        default: zulu
+      workspace-build-filter:
+        description: 'pnpm --filter selector to compile workspace deps before bundling (e.g. "@example/mobile^..."). Empty = skip.'
+        required: false
+        type: string
+        default: ''
+      gradle-command:
+        required: false
+        type: string
+        default: './gradlew bundleRelease --no-daemon'
+      aab-path:
+        description: 'AAB path relative to app-directory'
+        required: false
+        type: string
+        default: android/app/build/outputs/bundle/release/app-release.aab
+      forbidden-manifest-permissions:
+        description: 'Regex of permissions that must NOT appear in the merged manifest (e.g. "AD_ID|READ_MEDIA_IMAGES"). Empty = skip the check.'
+        required: false
+        type: string
+        default: ''
+      merged-manifest-path:
+        required: false
+        type: string
+        default: android/app/build/intermediates/merged_manifests/release/processReleaseManifest/AndroidManifest.xml
+      track:
+        description: 'Play track to upload to'
+        required: false
+        type: string
+        default: alpha
+      status:
+        description: 'Play release status (completed | draft | inProgress | halted)'
+        required: false
+        type: string
+        default: completed
+      gcp-project:
+        required: true
+        type: string
+      wif-provider:
+        description: 'Full workloadIdentityPools provider resource path'
+        required: true
+        type: string
+      wif-service-account:
+        description: 'Play publisher service account email'
+        required: true
+        type: string
+      signing-secret-ids:
+        required: true
+        type: string
+      build-secret-ids:
+        required: false
+        type: string
+        default: ''
+      publish:
+        required: false
+        type: boolean
+        default: true
+    secrets:
+      bws-token-signing:
+        required: true
+      bws-token-build:
+        required: false
+      npm-token:
+        required: false
+
+permissions:
+  contents: read
+  id-token: write # mint the WIF OIDC token for keyless Google auth
+
+jobs:
+  build-release:
+    name: Build signed AAB
+    runs-on: ${{ inputs.runner }}
+    timeout-minutes: 45
+    defaults:
+      run:
+        working-directory: ${{ inputs.app-directory }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # The signed release builds all ABIs, which exhausts the ~14 GB free on
+      # ubuntu-latest. Reclaim space by dropping preinstalled toolchains this job
+      # never touches.
+      - name: Free up disk space
+        working-directory: .
+        run: |
+          df -h /
+          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/.ghcup \
+            /usr/local/share/boost /usr/share/swift /opt/hostedtoolcache/CodeQL
+          sudo docker image prune --all --force || true
+          df -h /
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
+
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: ${{ inputs.node-version }}
+          package-manager-cache: false
+          registry-url: 'https://registry.npmjs.org'
+          scope: ${{ inputs.npm-scope }}
+          always-auth: true
+
+      # Retry: @prisma/engines postinstall fetches over the network and
+      # intermittently aborts; reinstall is idempotent under a frozen lockfile.
+      - name: Install dependencies
+        working-directory: .
+        shell: bash
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.npm-token }}
+        run: |
+          attempt=1
+          max=3
+          until pnpm install --frozen-lockfile; do
+            if [ "$attempt" -ge "$max" ]; then
+              echo "pnpm install failed after ${max} attempts"
+              exit 1
+            fi
+            echo "pnpm install failed (attempt ${attempt}/${max}), retrying in $((attempt * 15))s…"
+            sleep $((attempt * 15))
+            attempt=$((attempt + 1))
+          done
+
+      # Metro resolves workspace deps via their built "exports", so compile them
+      # first (topological; --if-present skips buildless packages).
+      - name: Build workspace deps
+        if: ${{ inputs.workspace-build-filter != '' }}
+        working-directory: .
+        shell: bash
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.npm-token }}
+          FILTER: ${{ inputs.workspace-build-filter }}
+        run: pnpm --filter "$FILTER" --if-present build
+
+      - name: Setup Java
+        uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5.7.0
+        with:
+          distribution: ${{ inputs.java-distribution }}
+          java-version: ${{ inputs.java-version }}
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@40fd30fb8d7440372e1316f5d1809ec01dcd3699 # v4.0.1
+
+      - name: Load signing secrets
+        uses: bitwarden/sm-action@1238aae8fc64b212641190a9227c8a734ab1a793 # v3.0.1
+        with:
+          access_token: ${{ secrets.bws-token-signing }}
+          secrets: ${{ inputs.signing-secret-ids }}
+
+      - name: Load app secrets
+        if: ${{ inputs.build-secret-ids != '' }}
+        uses: bitwarden/sm-action@1238aae8fc64b212641190a9227c8a734ab1a793 # v3.0.1
+        with:
+          access_token: ${{ secrets.bws-token-build }}
+          secrets: ${{ inputs.build-secret-ids }}
+
+      - name: Materialize keystore
+        shell: bash
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ env.ANDROID_KEYSTORE_BASE64 }}
+        run: |
+          set -euo pipefail
+          printf '%s' "$ANDROID_KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/upload-keystore.jks"
+          test -s "$RUNNER_TEMP/upload-keystore.jks"
+          echo "ANDROID_KEYSTORE_PATH=$RUNNER_TEMP/upload-keystore.jks" >> "$GITHUB_ENV"
+
+      # Gradle reads ANDROID_KEYSTORE_PATH / *_PASSWORD / KEY_ALIAS from the env
+      # (inherited); SENTRY_AUTH_TOKEN too if build-secret-ids provided it.
+      - name: Build release bundle
+        shell: bash
+        env:
+          GRADLE_COMMAND: ${{ inputs.gradle-command }}
+        run: |
+          set -euo pipefail
+          cd android
+          eval "$GRADLE_COMMAND"
+
+      - name: Verify 16KB page alignment
+        uses: Corey-Alan-Consulting/deploy-workflows/.github/actions/verify-aab-alignment@v1
+        with:
+          bundle: ${{ inputs.app-directory }}/${{ inputs.aab-path }}
+
+      - name: Verify merged manifest is policy-clean
+        if: ${{ inputs.forbidden-manifest-permissions != '' }}
+        shell: bash
+        env:
+          MANIFEST: ${{ inputs.merged-manifest-path }}
+          FORBIDDEN: ${{ inputs.forbidden-manifest-permissions }}
+        run: |
+          set -euo pipefail
+          if grep -E "$FORBIDDEN" "$MANIFEST"; then
+            echo "Policy-sensitive permission leaked into the merged manifest"
+            exit 1
+          fi
+          echo "merged manifest clean"
+
+      - name: Upload AAB artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: app-release-aab
+          path: ${{ inputs.app-directory }}/${{ inputs.aab-path }}
+          retention-days: 14
+
+      # Keyless: federate GitHub's OIDC token to impersonate the Play publisher SA.
+      - name: Authenticate to Google Cloud (WIF)
+        if: ${{ inputs.publish }}
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
+        with:
+          project_id: ${{ inputs.gcp-project }}
+          workload_identity_provider: ${{ inputs.wif-provider }}
+          service_account: ${{ inputs.wif-service-account }}
+
+      - name: Publish AAB to Google Play
+        if: ${{ inputs.publish }}
+        uses: Corey-Alan-Consulting/deploy-workflows/.github/actions/play-publish@v1
+        with:
+          mode: upload
+          package: ${{ inputs.package-name }}
+          aab: ${{ inputs.app-directory }}/${{ inputs.aab-path }}
+          track: ${{ inputs.track }}
+          status: ${{ inputs.status }}

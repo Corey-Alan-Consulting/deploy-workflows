@@ -35,9 +35,16 @@ inputs:
     description: Base URL of the coreyalan platform.
     required: false
     default: https://coreyalan.com
+  anthropic_oauth_token:
+    description: >-
+      Short-lived federated Anthropic access token (sk-ant-oat01-...) for the
+      editorial pass — minted by the caller via workload identity federation.
+    required: false
+    default: ''
   anthropic_api_key:
-    description: Anthropic API key for the editorial pass.
-    required: true
+    description: DEPRECATED — static Anthropic API key fallback; prefer anthropic_oauth_token.
+    required: false
+    default: ''
   release_api_key:
     description: sk_live_* key with release-announcements scopes (source binding selects the tenant).
     required: true
@@ -68,6 +75,7 @@ runs:
         CHANGELOG_URL: ${{ inputs.changelog_url }}
         CHANNELS_JSON: ${{ inputs.channels_json }}
         COREYALAN_API_URL: ${{ inputs.api_url }}
+        ANTHROPIC_OAUTH_TOKEN: ${{ inputs.anthropic_oauth_token }}
         ANTHROPIC_API_KEY: ${{ inputs.anthropic_api_key }}
         COREYALAN_RELEASE_API_KEY: ${{ inputs.release_api_key }}
         GITHUB_TOKEN: ${{ inputs.github_token }}

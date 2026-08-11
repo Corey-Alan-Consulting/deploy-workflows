@@ -66,12 +66,15 @@ on:
         type: string
         required: true
       anthropic_secret_id:
-        description: Bitwarden secret id of the Anthropic key for the editorial pass.
+        description: >-
+          DEPRECATED, ignored. The editorial pass authenticates via workload
+          identity federation (keyless); the input is kept only so existing
+          callers don't break and will be removed once they stop passing it.
         type: string
-        default: 141a9c8d-13d5-4280-92c4-b4a100e0f81f
+        default: ''
     secrets:
       BWS_TOKEN_BUILD:
-        description: Bitwarden machine token that can read the editorial + release-key secrets.
+        description: Bitwarden machine token that can read the release-key secret.
         required: true
       BWS_TOKEN_PLATFORM:
         description: Bitwarden machine token that can read the Port API credential pair.
@@ -80,6 +83,7 @@ on:
 permissions:
   contents: read
   actions: read # surface-matrix reads release-channel run conclusions
+  id-token: write # federated (keyless) Anthropic auth for the editorial pass
 
 jobs:
   build:
@@ -123,8 +127,42 @@ jobs:
         with:
           access_token: ${{ secrets.BWS_TOKEN_BUILD }}
           secrets: |
-            ${{ inputs.anthropic_secret_id }} > ANTHROPIC_API_KEY
             ${{ inputs.release_key_secret_id }} > COREYALAN_RELEASE_API_KEY
+
+      # Keyless Anthropic auth: exchange this job's GitHub OIDC token for a
+      # short-lived Anthropic access token. The federation rule is pinned to
+      # THIS reusable workflow's job_workflow_ref, so only runs of this
+      # builder (from any org repo) can mint a token — no per-brand API key,
+      # nothing to rotate. All five ANTHROPIC_* values are non-secret ids.
+      - name: Mint federated Anthropic token
+        id: anthropic
+        env:
+          ANTHROPIC_FEDERATION_RULE_ID: fdrl_01GwLBg4xSZAt7skCgZKeqZ1
+          ANTHROPIC_ORGANIZATION_ID: 2be9142c-408a-457e-94b1-7b37ef7d0c6b
+          ANTHROPIC_SERVICE_ACCOUNT_ID: svac_01M4j7nr8VSftH1AkGL6tRqh
+          ANTHROPIC_WORKSPACE_ID: wrkspc_01EUPu4heSAm6R2HCtMvFgUW
+        run: |
+          set -euo pipefail
+          JWT=$(curl -sS -H "Authorization: Bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+            "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=https://api.anthropic.com" | jq -r .value)
+          RESPONSE=$(jq -n \
+            --arg jwt "$JWT" \
+            --arg rule "$ANTHROPIC_FEDERATION_RULE_ID" \
+            --arg org "$ANTHROPIC_ORGANIZATION_ID" \
+            --arg sa "$ANTHROPIC_SERVICE_ACCOUNT_ID" \
+            --arg ws "$ANTHROPIC_WORKSPACE_ID" \
+            '{grant_type:"urn:ietf:params:oauth:grant-type:jwt-bearer", assertion:$jwt,
+              federation_rule_id:$rule, organization_id:$org,
+              service_account_id:$sa, workspace_id:$ws}' |
+            curl -sS -f https://api.anthropic.com/v1/oauth/token \
+              -H 'content-type: application/json' --data @-) || {
+            echo "::error::Anthropic token exchange failed — check the WIF authentication history in the Claude Console."; exit 1; }
+          TOKEN=$(jq -r .access_token <<< "$RESPONSE")
+          if [ -z "$TOKEN" ] || [ "$TOKEN" = "null" ]; then
+            echo "::error::Anthropic token exchange returned no access_token."; exit 1
+          fi
+          echo "::add-mask::$TOKEN"
+          echo "token=$TOKEN" >> "$GITHUB_OUTPUT"
 
       - name: Build and upsert draft
         id: draft
@@ -138,7 +176,7 @@ jobs:
           changelog_url: ${{ inputs.changelog_url }}
           channels_json: ${{ inputs.channels_json }}
           api_url: ${{ inputs.api_url }}
-          anthropic_api_key: ${{ env.ANTHROPIC_API_KEY }}
+          anthropic_oauth_token: ${{ steps.anthropic.outputs.token }}
           release_api_key: ${{ env.COREYALAN_RELEASE_API_KEY }}
           github_token: ${{ github.token }}
 

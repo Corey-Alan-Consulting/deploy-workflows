@@ -288,6 +288,21 @@ test('editorial retries once with validation feedback, then succeeds', async () 
   assert.equal(artifact.title, 'Dispatchr 0.4.2');
 });
 
+test('editorial authenticates federated tokens as Bearer and static keys as x-api-key', async () => {
+  const seen = [];
+  const fetchImpl = async (_url, init) => {
+    seen.push(init.headers);
+    return { ok: true, json: async () => ({ content: [{ text: JSON.stringify(GOOD_ARTIFACT) }] }) };
+  };
+  await editorial({ token: 'sk-ant-oat01-abc', prompt: 'p', fetchImpl });
+  assert.equal(seen[0].authorization, 'Bearer sk-ant-oat01-abc');
+  assert.equal(seen[0]['x-api-key'], undefined);
+
+  await editorial({ apiKey: 'sk-ant-key', prompt: 'p', fetchImpl });
+  assert.equal(seen[1]['x-api-key'], 'sk-ant-key');
+  assert.equal(seen[1].authorization, undefined);
+});
+
 test('editorial fails loudly when the retry is still invalid', async () => {
   const fetchImpl = async () => ({
     ok: true,

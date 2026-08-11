@@ -92,14 +92,8 @@ export function parseModelJson(text) {
   return JSON.parse(unfenced);
 }
 
-// Federated tokens (sk-ant-oat01-...) authenticate as a Bearer; static API
-// keys (the deprecated path) use x-api-key.
-const authHeader = ({ token, apiKey }) =>
-  token ? { authorization: `Bearer ${token}` } : { 'x-api-key': apiKey };
-
 export async function draftArtifact({
   token,
-  apiKey,
   prompt,
   feedback = null,
   fetchImpl = fetch,
@@ -118,7 +112,7 @@ export async function draftArtifact({
     method: 'POST',
     headers: {
       'content-type': 'application/json',
-      ...authHeader({ token, apiKey }),
+      authorization: `Bearer ${token}`,
       'anthropic-version': '2023-06-01',
     },
     body: JSON.stringify({ model: MODEL, max_tokens: 4096, messages }),

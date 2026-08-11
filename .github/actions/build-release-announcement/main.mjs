@@ -13,7 +13,6 @@
 //   GITHUB_REPOSITORY           owner/repo (provided by Actions)
 //   GITHUB_TOKEN                for channel-run lookups
 //   ANTHROPIC_OAUTH_TOKEN       editorial pass — short-lived federated token
-//                               (or DEPRECATED ANTHROPIC_API_KEY fallback)
 //   COREYALAN_API_URL           e.g. https://coreyalan.com
 //   COREYALAN_RELEASE_API_KEY   sk_live_* with release-announcements scopes;
 //                               its source binding selects the tenant
@@ -33,12 +32,7 @@ const env = name => {
   return v;
 };
 
-// Federated (Bearer) token preferred; static key is the deprecated fallback.
-const anthropicAuth = () => {
-  const token = process.env.ANTHROPIC_OAUTH_TOKEN;
-  if (token) return { token };
-  return { apiKey: env('ANTHROPIC_API_KEY') };
-};
+const anthropicAuth = () => ({ token: env('ANTHROPIC_OAUTH_TOKEN') });
 
 const version = env('VERSION');
 const productName = env('PRODUCT_NAME');

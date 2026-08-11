@@ -28,3 +28,4 @@ rules:
       # not apply to this read-auth. (The desktop workflows don't trip this —
       # their setup-node lives in the desktop-build-setup composite action.)
       - android-release.yml
+      - extension-release.yml

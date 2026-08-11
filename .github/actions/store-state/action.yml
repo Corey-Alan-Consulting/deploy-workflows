@@ -1,0 +1,59 @@
+name: Sync mobile store state to Port
+description: >
+  Poll live Google Play + App Store Connect release state and upsert one Port
+  `mobileRelease` entity per (service, platform, track), so the catalog reflects
+  what is actually live. Play auth is ambient ADC — run google-github-actions/auth
+  (keyless WIF) before this action. ASC + Port credentials are passed in; the ASC
+  private key is decoded to PEM only inside the step's process env.
+
+inputs:
+  apps-json:
+    description: >
+      JSON array of app entries: {service, android_package?, android_tracks?,
+      ios_app_id?}. `service` must match the app's Port service entity.
+    required: true
+  asc-issuer-id:
+    required: true
+  asc-key-id:
+    required: true
+  asc-private-key-base64:
+    description: 'App Store Connect API private key (.p8) as base64'
+    required: true
+  port-client-id:
+    required: true
+  port-client-secret:
+    required: true
+  port-api-base:
+    required: false
+    default: 'https://api.port.io'
+  python-version:
+    required: false
+    default: '3.12'
+
+runs:
+  using: composite
+  steps:
+    - name: Setup Python
+      uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+      with:
+        python-version: ${{ inputs.python-version }}
+
+    - name: Install deps
+      shell: bash
+      run: pip install --quiet google-api-python-client google-auth google-auth-httplib2 httplib2 'pyjwt[crypto]' requests
+
+    - name: Sync store state to Port
+      shell: bash
+      env:
+        STORE_SYNC_APPS: ${{ inputs.apps-json }}
+        ASC_ISSUER_ID: ${{ inputs.asc-issuer-id }}
+        ASC_KEY_ID: ${{ inputs.asc-key-id }}
+        ASC_PRIVATE_KEY_B64: ${{ inputs.asc-private-key-base64 }}
+        PORT_CLIENT_ID: ${{ inputs.port-client-id }}
+        PORT_CLIENT_SECRET: ${{ inputs.port-client-secret }}
+        PORT_API_BASE: ${{ inputs.port-api-base }}
+      run: |
+        set -euo pipefail
+        ASC_PRIVATE_KEY="$(printf '%s' "$ASC_PRIVATE_KEY_B64" | base64 -d)"
+        export ASC_PRIVATE_KEY
+        python3 "$GITHUB_ACTION_PATH/store-state.py"

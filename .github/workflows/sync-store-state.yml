@@ -1,0 +1,94 @@
+# Reusable mobile store-state sync (Play + App Store → Port mobileRelease).
+#
+# The READ path for the mobile-promotion feature (the write paths are
+# android-release / promote-android / ios-submit). Polls what is actually released
+# on each store and upserts one Port entity per (service, platform, track), so a
+# submitted iOS version flips to "live" in the catalog once Apple approves.
+#
+# Read-only; runs on the caller's schedule. Play via keyless WIF; App Store Connect
+# key + Port API creds from Bitwarden (two projects → two tokens).
+#
+# CONVENTION:
+#   signing-secret-ids → ASC_SUBMIT_ISSUER_ID · ASC_SUBMIT_KEY_ID · ASC_SUBMIT_PRIVATE_KEY_B64
+#   port-secret-ids    → PORT_CLIENT_ID · PORT_CLIENT_SECRET
+
+name: Sync mobile store state
+
+on:
+  workflow_call:
+    inputs:
+      apps-json:
+        description: 'JSON array of {service, android_package?, android_tracks?, ios_app_id?} entries'
+        required: true
+        type: string
+      gcp-project:
+        required: true
+        type: string
+      wif-provider:
+        required: true
+        type: string
+      wif-service-account:
+        required: true
+        type: string
+      signing-secret-ids:
+        description: 'sm-action mapping for the ASC key (see header)'
+        required: true
+        type: string
+      port-secret-ids:
+        description: 'sm-action mapping for the Port API creds (see header)'
+        required: true
+        type: string
+      port-api-base:
+        required: false
+        type: string
+        default: 'https://api.port.io'
+    secrets:
+      bws-token-signing:
+        required: true
+      bws-token-platform:
+        required: true
+
+permissions:
+  contents: read
+  id-token: write # mint the WIF OIDC token for keyless Google auth
+
+jobs:
+  sync:
+    name: Poll stores → Port
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    concurrency:
+      group: sync-store-state-${{ github.repository }}
+      cancel-in-progress: true
+    steps:
+      - name: Authenticate to Google Cloud (WIF)
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
+        with:
+          project_id: ${{ inputs.gcp-project }}
+          workload_identity_provider: ${{ inputs.wif-provider }}
+          service_account: ${{ inputs.wif-service-account }}
+
+      - name: Load App Store Connect key from Bitwarden
+        uses: bitwarden/sm-action@1238aae8fc64b212641190a9227c8a734ab1a793 # v3.0.1
+        with:
+          access_token: ${{ secrets.bws-token-signing }}
+          secrets: ${{ inputs.signing-secret-ids }}
+
+      # Port API creds live in a separate BWS project (the org-wide Port creds), so
+      # they need their own token — the signing token cannot read them.
+      - name: Load Port API creds from Bitwarden
+        uses: bitwarden/sm-action@1238aae8fc64b212641190a9227c8a734ab1a793 # v3.0.1
+        with:
+          access_token: ${{ secrets.bws-token-platform }}
+          secrets: ${{ inputs.port-secret-ids }}
+
+      - name: Sync store state to Port
+        uses: Corey-Alan-Consulting/deploy-workflows/.github/actions/store-state@v1
+        with:
+          apps-json: ${{ inputs.apps-json }}
+          asc-issuer-id: ${{ env.ASC_SUBMIT_ISSUER_ID }}
+          asc-key-id: ${{ env.ASC_SUBMIT_KEY_ID }}
+          asc-private-key-base64: ${{ env.ASC_SUBMIT_PRIVATE_KEY_B64 }}
+          port-client-id: ${{ env.PORT_CLIENT_ID }}
+          port-client-secret: ${{ env.PORT_CLIENT_SECRET }}
+          port-api-base: ${{ inputs.port-api-base }}

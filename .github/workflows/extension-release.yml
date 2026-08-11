@@ -1,0 +1,267 @@
+# Reusable Chrome extension release (signed CRX → Chrome Web Store, keyless WIF).
+#
+# Build → package → sign a Verified-CRX with the registered key → raw-upload to the
+# store item → publish to the public channel. Keyless: WIF exchanges the GitHub OIDC
+# token for a chromewebstore-scoped token as the publisher SA; the CRX signing key
+# (a code-signing key, like the Android keystore) comes from Bitwarden.
+#
+# Firefox (AMO) is intentionally not here — no reusable AMO publish exists to
+# generalize yet; add an amo-* path when one does.
+#
+# CONVENTION — signing-secret-ids must provide: CHROME_CRX_SIGNING_KEY_B64
+
+name: Release Chrome extension
+
+on:
+  workflow_call:
+    inputs:
+      version:
+        description: 'Version to stamp into the manifest and publish (semver)'
+        required: true
+        type: string
+      app-directory:
+        required: false
+        type: string
+        default: apps/extension
+      extension-build-filter:
+        description: 'pnpm --filter selector that builds the extension (e.g. "@example/extension")'
+        required: true
+        type: string
+      manifest-path:
+        required: false
+        type: string
+        default: apps/extension/manifest.json
+      dist-dir:
+        description: 'Built extension directory to package + sign'
+        required: false
+        type: string
+        default: apps/extension/dist
+      artifact-basename:
+        description: 'Basename for the .zip/.crx artifacts, e.g. "example-extension"'
+        required: true
+        type: string
+      extension-id:
+        description: 'Chrome Web Store item id'
+        required: true
+        type: string
+      node-version:
+        required: false
+        type: string
+        default: '22'
+      npm-scope:
+        required: false
+        type: string
+        default: '@corey-alan-consulting'
+      gcp-project:
+        required: true
+        type: string
+      wif-provider:
+        required: true
+        type: string
+      webstore-service-account:
+        description: 'chrome-webstore-publisher service account email'
+        required: true
+        type: string
+      signing-secret-ids:
+        required: true
+        type: string
+      publish:
+        description: 'Publish to the Chrome Web Store (set from the tag check in the caller)'
+        required: false
+        type: boolean
+        default: true
+    secrets:
+      bws-token-signing:
+        required: true
+      npm-token:
+        required: false
+
+permissions:
+  contents: read
+  id-token: write # Workload Identity Federation
+
+jobs:
+  build-and-publish:
+    name: Build & publish extension
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Get signing secrets from Bitwarden
+        uses: bitwarden/sm-action@1238aae8fc64b212641190a9227c8a734ab1a793 # v3.0.1
+        with:
+          access_token: ${{ secrets.bws-token-signing }}
+          secrets: ${{ inputs.signing-secret-ids }}
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
+
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: ${{ inputs.node-version }}
+          package-manager-cache: false
+          registry-url: 'https://registry.npmjs.org'
+          scope: ${{ inputs.npm-scope }}
+          always-auth: true
+
+      - name: Install dependencies
+        shell: bash
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.npm-token }}
+        run: |
+          attempt=1
+          max=3
+          until pnpm install --frozen-lockfile; do
+            if [ "$attempt" -ge "$max" ]; then
+              echo "pnpm install failed after ${max} attempts"
+              exit 1
+            fi
+            echo "pnpm install failed (attempt ${attempt}/${max}), retrying in $((attempt * 15))s…"
+            sleep $((attempt * 15))
+            attempt=$((attempt + 1))
+          done
+
+      # The version input is the single source of truth so the manifest can't
+      # drift from what we publish.
+      - name: Set manifest version
+        shell: bash
+        env:
+          VERSION: ${{ inputs.version }}
+          MANIFEST: ${{ inputs.manifest-path }}
+        run: |
+          set -euo pipefail
+          if ! echo "$VERSION" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "Invalid version '$VERSION' (expected semver like 2.0.0)" >&2
+            exit 1
+          fi
+          echo "Setting extension version to $VERSION"
+          MANIFEST="$MANIFEST" VERSION="$VERSION" node -e "const f=process.env.MANIFEST;const m=require('path').resolve(f);const j=require(m);j.version=process.env.VERSION;require('fs').writeFileSync(m, JSON.stringify(j, null, 2) + '\n');"
+
+      - name: Build extension
+        shell: bash
+        env:
+          FILTER: ${{ inputs.extension-build-filter }}
+        run: pnpm --filter "$FILTER" build
+
+      - name: Package extension
+        shell: bash
+        env:
+          DIST: ${{ inputs.dist-dir }}
+          BASENAME: ${{ inputs.artifact-basename }}
+        run: |
+          set -euo pipefail
+          ( cd "$DIST" && zip -r "$OLDPWD/${BASENAME}.zip" . )
+
+      # Verified CRX Uploads requires a CRX signed with the registered key.
+      # Chrome's --pack-extension is Google's documented signer; xvfb satisfies
+      # its display requirement on the runner.
+      - name: Sign package (Verified CRX Uploads)
+        shell: bash
+        env:
+          DIST: ${{ inputs.dist-dir }}
+          BASENAME: ${{ inputs.artifact-basename }}
+          CHROME_CRX_SIGNING_KEY_B64: ${{ env.CHROME_CRX_SIGNING_KEY_B64 }}
+        run: |
+          set -euo pipefail
+          KEY=$(mktemp)
+          echo "$CHROME_CRX_SIGNING_KEY_B64" | base64 -d > "$KEY"
+          xvfb-run -a google-chrome \
+            --pack-extension="$PWD/$DIST" \
+            --pack-extension-key="$KEY"
+          rm -f "$KEY"
+          # --pack-extension writes <dir>.crx alongside the dist dir.
+          test -s "${DIST}.crx"
+          mv "${DIST}.crx" "${BASENAME}.crx"
+          echo "Signed CRX: $(ls -la "${BASENAME}.crx")"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: chrome-extension
+          path: |
+            ${{ inputs.artifact-basename }}.zip
+            ${{ inputs.artifact-basename }}.crx
+          retention-days: 30
+
+      - name: Note build-only run
+        if: ${{ !inputs.publish }}
+        run: echo "::notice::publish=false — built + signed the artifact only; the store publish was skipped."
+
+      # Keyless: WIF exchanges the GitHub OIDC token for a chromewebstore-scoped
+      # token as the publisher SA — no stored secrets.
+      - name: Authenticate to Google Cloud
+        id: auth
+        if: ${{ inputs.publish }}
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
+        with:
+          project_id: ${{ inputs.gcp-project }}
+          workload_identity_provider: ${{ inputs.wif-provider }}
+          service_account: ${{ inputs.webstore-service-account }}
+          token_format: 'access_token'
+          access_token_scopes: 'https://www.googleapis.com/auth/chromewebstore'
+
+      - name: Publish to Chrome Web Store
+        if: ${{ inputs.publish }}
+        shell: bash
+        env:
+          ACCESS_TOKEN: ${{ steps.auth.outputs.access_token }}
+          EXTENSION_ID: ${{ inputs.extension-id }}
+          BASENAME: ${{ inputs.artifact-basename }}
+        run: |
+          set -euo pipefail
+
+          echo "Uploading package to item $EXTENSION_ID..."
+          # Verified CRX Uploads: the item only accepts a signed CRX via these
+          # raw-upload headers; without them it rejects with PKG_MUST_UPDATE_AS_CRX.
+          # `if !` keeps set -e from aborting before the captured error body prints.
+          if ! UPLOAD=$(curl -sS --fail-with-body \
+            -H "Authorization: Bearer $ACCESS_TOKEN" \
+            -H "x-goog-api-version: 2" \
+            -H "X-Goog-Upload-Protocol: raw" \
+            -H "X-Goog-Upload-File-Name: ${BASENAME}.crx" \
+            -X PUT -T "${BASENAME}.crx" \
+            "https://www.googleapis.com/upload/chromewebstore/v1.1/items/$EXTENSION_ID"); then
+            echo "$UPLOAD" >&2
+            exit 1
+          fi
+          echo "$UPLOAD"
+
+          STATE=$(node -e "let s='';process.stdin.on('data',d=>s+=d).on('end',()=>{try{console.log(JSON.parse(s).uploadState||'')}catch{process.exit(1)}})" <<< "$UPLOAD")
+          if [ "$STATE" != "SUCCESS" ]; then
+            echo "Upload failed (uploadState=$STATE)" >&2
+            exit 1
+          fi
+
+          echo "Publishing to the public channel..."
+          # The publish endpoint can return HTTP 200 with a non-OK status array, so
+          # --fail-with-body alone isn't enough.
+          if ! PUBLISH=$(curl -sS --fail-with-body \
+            -H "Authorization: Bearer $ACCESS_TOKEN" \
+            -H "x-goog-api-version: 2" \
+            -H "Content-Length: 0" \
+            -X POST \
+            "https://www.googleapis.com/chromewebstore/v1.1/items/$EXTENSION_ID/publish"); then
+            echo "$PUBLISH" >&2
+            exit 1
+          fi
+          echo "$PUBLISH"
+
+          STATUS=$(node -e "let s='';process.stdin.on('data',d=>s+=d).on('end',()=>{try{console.log((JSON.parse(s).status||[]).join(','))}catch{process.exit(1)}})" <<< "$PUBLISH")
+          if [ -z "$STATUS" ]; then
+            echo "Publish failed (empty status)" >&2
+            exit 1
+          fi
+          for ITEM in ${STATUS//,/ }; do
+            case "$ITEM" in
+              OK) ;;
+              ITEM_PENDING_REVIEW) echo "::notice::Publish accepted; item is pending Chrome Web Store review." ;;
+              *)
+                echo "Publish failed (status=$STATUS)" >&2
+                exit 1
+                ;;
+            esac
+          done

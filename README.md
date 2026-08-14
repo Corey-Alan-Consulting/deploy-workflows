@@ -524,6 +524,14 @@ App** so it runs only after a Port approval.
 | Android | `ANDROID_KEYSTORE_BASE64`, `ANDROID_KEYSTORE_PASSWORD`, `ANDROID_KEY_ALIAS`, `ANDROID_KEY_PASSWORD` |
 | iOS submit | `ASC_SUBMIT_ISSUER_ID`, `ASC_SUBMIT_KEY_ID`, `ASC_SUBMIT_PRIVATE_KEY_B64` |
 
+Android release builds are slow and **uncached** — a tag ref can't read a branch's
+Gradle cache, so every release recompiles the RN C++ core, reanimated and worklets
+for each ABI in `reactNativeArchitectures`. Size `build-timeout-minutes` (default
+`90`) well above the observed build time: the Play upload is the last step, so a
+build that merely runs long otherwise burns a good AAB. Note GitHub forbids
+`timeout-minutes` on a job that calls a reusable workflow — this input is the only
+way for a caller to control it.
+
 ```yaml
 # .github/workflows/release-android.yml  (in the app repo)
 name: Release Android

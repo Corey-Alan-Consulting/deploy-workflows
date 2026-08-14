@@ -27,6 +27,15 @@ on:
         required: false
         type: string
         default: ubuntu-latest
+      # A cold release build compiles the RN C++ core, reanimated and worklets
+      # for every ABI in `reactNativeArchitectures` — tens of minutes with no
+      # warm Gradle cache (tag refs can't read a branch cache). Budget well
+      # above the observed build so a slow runner never guillotines the Play
+      # upload after a good AAB was already produced.
+      build-timeout-minutes:
+        required: false
+        type: number
+        default: 90
       node-version:
         required: false
         type: string
@@ -114,7 +123,7 @@ jobs:
   build-release:
     name: Build signed AAB
     runs-on: ${{ inputs.runner }}
-    timeout-minutes: 45
+    timeout-minutes: ${{ inputs.build-timeout-minutes }}
     defaults:
       run:
         working-directory: ${{ inputs.app-directory }}

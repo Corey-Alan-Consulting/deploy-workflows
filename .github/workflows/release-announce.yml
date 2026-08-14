@@ -199,6 +199,38 @@ jobs:
             -d "$(jq -n --arg id "$PORT_CLIENT_ID" --arg s "$PORT_CLIENT_SECRET" '{clientId:$id, clientSecret:$s}')" | jq -r .accessToken)
           if [ -z "$PTOK" ] || [ "$PTOK" = "null" ]; then echo "::error::Port auth failed"; exit 1; fi
 
+          # One approval run per announcement.
+          #
+          # Anything that promotes twice announces twice: the automation fires
+          # per promote_to_production run, and two runs for one deploy needs
+          # only a double-submit in the Port UI (jlshaw-link 0.13.4, 30s apart).
+          # The draft step upserts by version, so both dispatches reach here
+          # holding the SAME announcement_id — and each opened its own approval
+          # run, so one release asked for two approvals and sent two notifications.
+          #
+          # Only WAITING_FOR_APPROVAL / IN_PROGRESS / SUCCESS suppress. A run
+          # that was declined or whose send failed MUST stay reopenable, or
+          # rejecting one bad draft would strand that version permanently.
+          #
+          # FAIL-OPEN by design: on any lookup error we fall through and POST.
+          # This is noise control, not a safety control — the send endpoint is
+          # idempotent on SENT rows (sendV1 returns alreadySent instead of
+          # mailing again), so a surplus approval costs a prompt, not an email.
+          # Stranding a real announcement on a transient Port blip is worse.
+          EXISTING=$(curl -sS -f --max-time 30 \
+            "https://api.port.io/v1/actions/runs?limit=100" \
+            -H "Authorization: Bearer $PTOK" \
+            | jq -r --arg aid "$ANNOUNCEMENT_ID" '
+                [ (.runs // [])[]
+                  | select((.properties.announcement_id // "") == $aid)
+                  | select(.status as $s
+                      | ["WAITING_FOR_APPROVAL","IN_PROGRESS","SUCCESS"] | index($s)) ]
+                | .[0].id // empty' || true)
+          if [ -n "${EXISTING:-}" ]; then
+            echo "Announcement ${ANNOUNCEMENT_ID} (v${VERSION}) already has approval run ${EXISTING} — not opening a second."
+            exit 0
+          fi
+
           BODY=$(jq -n --arg e "$SERVICE" --arg aid "$ANNOUNCEMENT_ID" --arg v "$VERSION" \
             '{entity:$e, properties:{announcement_id:$aid, version:$v}}')
           HTTP=$(curl -sS -o /tmp/resp.json -w '%{http_code}' -X POST \

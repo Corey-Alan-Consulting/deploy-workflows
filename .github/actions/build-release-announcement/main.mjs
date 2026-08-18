@@ -113,6 +113,25 @@ if (result.status === 400 && result.body?.details?.errors) {
   result = await upsert(retried, '-retry');
 }
 
+if (result.status === 409 && result.body?.error?.code === 'ALREADY_SENT') {
+  // The announcement for this version was already sent — a late duplicate
+  // dispatch (multiple promote_to_production runs used to fire one announce
+  // build each) or a manual re-run after the send. Nothing to draft, nothing
+  // went wrong: exit cleanly so releases don't end with red announce runs.
+  // The workflow gates the Port approval step on this output.
+  console.log(`Announcement for ${version} already sent — nothing to do, skipping.`);
+  if (process.env.GITHUB_OUTPUT) {
+    appendFileSync(process.env.GITHUB_OUTPUT, 'already_sent=true\n');
+  }
+  if (process.env.GITHUB_STEP_SUMMARY) {
+    appendFileSync(
+      process.env.GITHUB_STEP_SUMMARY,
+      `## Release announcement — ${productName} ${version}\n\nAlready sent; this run had nothing to do.\n`
+    );
+  }
+  process.exit(0);
+}
+
 if (result.status !== 200) {
   throw new Error(
     `Draft upsert failed: HTTP ${result.status} ${JSON.stringify(result.body).slice(0, 500)}`

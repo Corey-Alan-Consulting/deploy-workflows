@@ -179,6 +179,9 @@ jobs:
       # BWS_TOKEN_PLATFORM machine account reads ONLY that tiny project —
       # never Platform Infrastructure.
       - name: Load Port API creds from Bitwarden
+        # Skip when the announcement was already sent (late duplicate
+        # dispatch) — there is no draft to open an approval run for.
+        if: steps.draft.outputs.already_sent != 'true'
         uses: bitwarden/sm-action@1238aae8fc64b212641190a9227c8a734ab1a793 # v3.0.1
         with:
           access_token: ${{ secrets.BWS_TOKEN_PLATFORM }}
@@ -187,6 +190,7 @@ jobs:
             0ab68808-64c7-403e-a1e6-b4a3002a5166 > PORT_CLIENT_SECRET
 
       - name: Open Port approval run (run_as platform-admin@)
+        if: steps.draft.outputs.already_sent != 'true'
         env:
           ANNOUNCEMENT_ID: ${{ steps.draft.outputs.announcement_id }}
           VERSION: ${{ steps.draft.outputs.announcement_version }}

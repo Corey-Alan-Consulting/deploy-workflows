@@ -54,6 +54,9 @@ outputs:
   announcement_version:
     description: Version recorded on the draft.
     value: ${{ steps.build.outputs.announcement_version }}
+  already_sent:
+    description: "'true' when the announcement for this version was already sent (late duplicate dispatch); the draft/approval steps were skipped."
+    value: ${{ steps.build.outputs.already_sent }}
 
 runs:
   using: composite

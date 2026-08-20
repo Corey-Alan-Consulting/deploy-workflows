@@ -641,6 +641,39 @@ ios_app_id?}` entries, so one workflow covers every app.
 `ASC_SUBMIT_ISSUER_ID` / `ASC_SUBMIT_KEY_ID` / `ASC_SUBMIT_PRIVATE_KEY_B64` (+ Port
 creds `PORT_CLIENT_ID` / `PORT_CLIENT_SECRET` via `port-secret-ids`).
 
+## Reusable Workflows — release announcements
+
+The replacement for the retired `send-release-email` action (which fired at
+tag-publish, pre-verification, and rendered the root package's always-empty
+changelog). Two reusable workflows, both consumed by thin callers in each
+brand repo:
+
+- **`release-announce.yml` (build)** — dispatched by the brand's Port
+  automation after its `promote_to_production` run succeeds. Resolves the
+  released version from the newest `tag_prefix` tag, waits for prod to be
+  live (`health_mode: version | status | skip`), aggregates every workspace
+  package's CHANGELOG section (hard-fails if the union is empty), drafts the
+  announcement via a keyless federated Anthropic editorial pass, upserts the
+  draft on the coreyalan platform (the brand's `sk_live_*` release key
+  selects the tenant), and opens the `announce_release` Port approval run as
+  platform-admin@ (SoD: the approver cannot be the executor). Duplicate
+  protection: only one approval run opens per announcement, and a build that
+  arrives after the send exits cleanly on `ALREADY_SENT`.
+- **`release-announce-send.yml` (send)** — dispatched by Port when a human
+  approves the `announce_release` run; actor-locked to the Port GitHub App.
+  POSTs the idempotent send (`Idempotency-Key` = the Port run id). Nothing
+  sends at tag time, ever.
+
+**Pinning exception:** callers reference these two workflows `@main` — the
+Anthropic token exchange federates on this reusable workflow's
+`job_workflow_ref`, and a SHA-pinned caller would change that OIDC claim and
+break the exchange. Every other workflow in this repo follows the
+SHA-pin rule below.
+
+Per-brand wiring: a `sk_live_*` release key in Bitwarden
+(`release_key_secret_id`), `BWS_TOKEN_BUILD` + `BWS_TOKEN_PLATFORM`, and the
+brand's announce automation in `platform-infra`.
+
 ## Renovate Preset
 
 Shared dependency-update policy for all repos. Reference it from each repo's

@@ -1,0 +1,67 @@
+# Reusable Port-only dispatch gate.
+#
+# Port enforces the approval; GitHub enforces that the run really came from
+# Port. Call this as the first job of a promotion workflow and put `needs:` on
+# the job that does the work — a refused dispatch fails here and the real job
+# never starts, so the gate fails closed.
+#
+#   jobs:
+#     guard:
+#       uses: Corey-Alan-Consulting/deploy-workflows/.github/workflows/port-dispatch-guard.yml@v1
+#       with:
+#         port-actor-id: '310211542'
+#         action-name: promote_windows_store
+#     promote:
+#       needs: guard
+#       ...
+#
+# Actor id, not login: logins are renameable and re-registrable, the numeric
+# account id is not. The triggering_actor check catches a human re-running a
+# previously Port-dispatched run — `actor` stays the original dispatcher while
+# `triggering_actor` becomes whoever pressed the button.
+#
+# Requests no permissions and takes no secrets: the refusal path must not be
+# able to touch anything.
+
+name: Port dispatch guard
+
+on:
+  workflow_call:
+    inputs:
+      port-actor-id:
+        description: 'Immutable numeric account id of the Port GitHub App (the only allowed dispatcher)'
+        required: true
+        type: string
+      action-name:
+        description: 'Port action to point a refused caller at, e.g. promote_windows_store'
+        required: false
+        type: string
+        default: ''
+
+permissions: {}
+
+jobs:
+  guard:
+    name: Enforce Port-only dispatch
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      # Every value via env, never interpolated into the script body.
+      - name: Verify the dispatcher
+        shell: bash
+        env:
+          ACTOR_ID: ${{ github.actor_id }}
+          EXPECTED_ID: ${{ inputs.port-actor-id }}
+          DISPATCHER: ${{ github.actor }}
+          TRIGGERING: ${{ github.triggering_actor }}
+          ACTION_NAME: ${{ inputs.action-name }}
+        run: |
+          set -euo pipefail
+          if [ "$ACTOR_ID" = "$EXPECTED_ID" ] && [ "$TRIGGERING" = "$DISPATCHER" ]; then
+            echo "Dispatched by the Port GitHub App after approval."
+            exit 0
+          fi
+          via="the Port action"
+          [ -n "$ACTION_NAME" ] && via="the Port \`${ACTION_NAME}\` action"
+          echo "::error::This run is gated on ${via} and its approval (dispatcher was '${TRIGGERING}'). Run it in Port and approve; direct dispatch and re-runs are refused."
+          exit 1

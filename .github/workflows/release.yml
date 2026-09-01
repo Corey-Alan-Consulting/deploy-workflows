@@ -129,9 +129,8 @@ jobs:
           publish-script: pnpm exec changeset tag
           commit-message: 'chore: release packages'
           pr-title: 'chore: release packages'
-          # Commit via the GitHub API so the version commit + tags are signed
-          # with the App's GPG key (required if main enforces signed commits).
-          commitMode: github-api
+          # v2 pushes via the GitHub API by default (signed commits/tags);
+          # the old commitMode input was removed.
         env:
           GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}
 

@@ -119,14 +119,16 @@ jobs:
         id: changesets
         uses: changesets/action@8488615a623b1b9c987934bb89eae8af6a946ac1 # v2.1.1
         with:
-          version: pnpm version-packages
+          # changesets/action v2 renamed these inputs and hard-errors on the
+          # old names — the dependabot v2 bump landed without this migration.
+          version-script: pnpm version-packages
           # `changeset tag` updates versions, consumes changesets, regenerates
           # CHANGELOGs, and creates git tags but does NOT publish. The action
           # still parses "New tag" lines from stdout to populate
           # `publishedPackages`, which the publish step below gates on.
-          publish: pnpm exec changeset tag
-          commit: 'chore: release packages'
-          title: 'chore: release packages'
+          publish-script: pnpm exec changeset tag
+          commit-message: 'chore: release packages'
+          pr-title: 'chore: release packages'
           # Commit via the GitHub API so the version commit + tags are signed
           # with the App's GPG key (required if main enforces signed commits).
           commitMode: github-api

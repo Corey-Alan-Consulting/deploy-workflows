@@ -129,10 +129,10 @@ jobs:
           publish-script: pnpm exec changeset tag
           commit-message: 'chore: release packages'
           pr-title: 'chore: release packages'
-          # v2 pushes via the GitHub API by default (signed commits/tags);
-          # the old commitMode input was removed.
-        env:
-          GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}
+          # v2 pushes via the GitHub API by default (signed commits/tags; the
+          # old commitMode input was removed) and takes the token as an INPUT —
+          # a GITHUB_TOKEN env var that differs from it is a hard error.
+          github-token: ${{ steps.app-token.outputs.token }}
 
       - name: Build library packages (topological)
         if: steps.changesets.outputs.published == 'true'

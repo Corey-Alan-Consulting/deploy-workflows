@@ -145,8 +145,11 @@ jobs:
         run: |
           set -euo pipefail
           if [ -d packages ]; then
-            pnpm --filter './packages/**' run build
-            pnpm --filter './packages/**' run smoke
+            # --if-present: pnpm recursive run HARD-FAILS when no selected
+            # package has the script (it only "skips" when at least one does) —
+            # a repo whose packages define build but no smoke died here.
+            pnpm --filter './packages/**' run --if-present build
+            pnpm --filter './packages/**' run --if-present smoke
           fi
 
       - name: Publish changed packages to npm (OIDC)

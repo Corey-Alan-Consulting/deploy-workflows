@@ -121,25 +121,15 @@ jobs:
       #
       # Skipped when the caller supplies no tag_prefix, so existing callers
       # keep working unchanged; adding the input is how a repo opts in.
-      - name: Check out the action
-        if: inputs.tag_prefix != ''
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          repository: Corey-Alan-Consulting/deploy-workflows
-          # `main`, not github.workflow_sha — in a reusable workflow that
-          # context resolves to the CALLER's workflow file, which would check
-          # out the wrong repo entirely. `main` is also the only ref these
-          # callers may use: the Anthropic WIF federation rule matches
-          # job_workflow_ref, so a SHA pin breaks the build side
-          # (framework standards/ci-cd.md). Action and workflow therefore come
-          # from the same ref by construction.
-          ref: main
-          path: .deploy-workflows
-          persist-credentials: false
-
+      #
+      # `$/` is the self-repository syntax: it resolves to THIS repository at
+      # the exact commit already running, with no checkout and no hardcoded
+      # ref. That matters here — `./` would resolve against the caller's
+      # workspace, and github.workflow_sha inside a reusable workflow points at
+      # the CALLER's workflow file, so neither can reach this action.
       - name: Backfill GitHub Release body
         if: inputs.tag_prefix != ''
-        uses: ./.deploy-workflows/.github/actions/backfill-release-body
+        uses: $/.github/actions/backfill-release-body
         with:
           announcement_id: ${{ inputs.announcement_id }}
           tag_prefix: ${{ inputs.tag_prefix }}

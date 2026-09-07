@@ -31,6 +31,13 @@ on:
         description: Contact tag the send targets.
         type: string
         default: release-notify-internal
+      tag_prefix:
+        description: >-
+          Prefix the release tag is built from — `<prefix><version>`. Supply it
+          to have the GitHub Release body backfilled from the announcement
+          artifact; omit it and that step is skipped. Workspace repos use
+          `reggiesbbq@`, single-package repos use `v`.
+        type: string
       api_url:
         description: Base URL of the coreyalan platform.
         type: string
@@ -69,6 +76,10 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     if: github.actor_id == 310211542 && github.triggering_actor == github.actor
+    # contents: write — the backfill step below patches the GitHub Release body
+    # for the root tag, which changesets leaves structurally empty.
+    permissions:
+      contents: write
 
     steps:
       - name: Get send credential from Bitwarden
@@ -103,3 +114,25 @@ jobs:
             200) echo "Announcement send enqueued: $(jq -r '.data.campaignId' /tmp/resp.json) (alreadySent=$(jq -r '.data.alreadySent' /tmp/resp.json))" ;;
             *)   echo "::error::send failed (HTTP $HTTP)"; exit 1 ;;
           esac
+
+      # Fan-out: sync the GitHub Release body to the announced artifact.
+      # Runs AFTER the send — a failure here means the email went out but the
+      # release page needs a manual sync, and the red job says so.
+      #
+      # Skipped when the caller supplies no tag_prefix, so existing callers
+      # keep working unchanged; adding the input is how a repo opts in.
+      #
+      # `$/` is the self-repository syntax: it resolves to THIS repository at
+      # the exact commit already running, with no checkout and no hardcoded
+      # ref. That matters here — `./` would resolve against the caller's
+      # workspace, and github.workflow_sha inside a reusable workflow points at
+      # the CALLER's workflow file, so neither can reach this action.
+      - name: Backfill GitHub Release body
+        if: inputs.tag_prefix != ''
+        uses: $/.github/actions/backfill-release-body
+        with:
+          announcement_id: ${{ inputs.announcement_id }}
+          tag_prefix: ${{ inputs.tag_prefix }}
+          api_url: ${{ inputs.api_url }}
+          release_api_key: ${{ env.COREYALAN_RELEASE_API_KEY }}
+          github_token: ${{ github.token }}

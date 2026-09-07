@@ -1,0 +1,13 @@
+# actionlint does not yet know GitHub's `$/` self-repository `uses:` syntax
+# (GA 2026-07-30; actionlint's newest release v1.7.12 predates it —
+# rhysd/actionlint#711 is open, and #719 reports the maintainer inactive, so
+# there is no version bump that fixes this). It reports `$/...` as a missing
+# ref, while zizmor asks for exactly that syntax.
+#
+# Scoped to the one file and anchored on the literal `$/`, so a genuinely
+# malformed `uses:` still fails here and everywhere else. Delete when
+# actionlint ships support.
+paths:
+  .github/workflows/release-announce-send.yml:
+    ignore:
+      - 'specifying action "\$/[^"]*" in invalid format because ref is missing'

@@ -1,0 +1,39 @@
+name: Backfill release body
+description: >-
+  Rewrite the GitHub Release body for the root tag from the announcement
+  artifact, so the Releases page carries the same story as the email.
+  Changesets leaves that body structurally empty in fixed-group repos.
+
+inputs:
+  announcement_id:
+    description: ReleaseAnnouncement id created by the build workflow.
+    required: true
+  tag_prefix:
+    description: >-
+      Prefix the release tag is built from — `<prefix><version>`. Workspace
+      repos use `reggiesbbq@`; single-package repos use `v`.
+    required: true
+  api_url:
+    description: Base URL of the coreyalan platform.
+    required: true
+  release_api_key:
+    description: sk_live_* release key for reading the announcement artifact.
+    required: true
+  github_token:
+    description: Token with `contents: write` on this repo, to patch the release.
+    required: true
+
+runs:
+  using: composite
+  steps:
+    # Runner-preinstalled Node is sufficient — the script is dependency-free
+    # and uses only global fetch, so there is no setup-node or install step.
+    - name: Backfill GitHub Release body
+      shell: bash
+      env:
+        ANNOUNCEMENT_ID: ${{ inputs.announcement_id }}
+        TAG_PREFIX: ${{ inputs.tag_prefix }}
+        COREYALAN_API_URL: ${{ inputs.api_url }}
+        COREYALAN_RELEASE_API_KEY: ${{ inputs.release_api_key }}
+        GITHUB_TOKEN: ${{ inputs.github_token }}
+      run: node "${{ github.action_path }}/backfill.mjs"

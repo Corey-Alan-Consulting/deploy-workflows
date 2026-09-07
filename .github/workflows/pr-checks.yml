@@ -57,3 +57,6 @@ jobs:
       # Dependency-free node:test suite for the build-release-announcement
       # composite action (runner-preinstalled Node is sufficient).
       - run: node --test .github/actions/build-release-announcement/announcement.test.mjs
+      # Send-side renderer, upstreamed from capturly so every repo gets a
+      # non-empty GitHub Release body rather than just that one.
+      - run: node --test .github/actions/backfill-release-body/backfill.test.mjs

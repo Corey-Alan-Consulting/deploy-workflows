@@ -17,6 +17,16 @@
   ],
   "packageRules": [
     {
+      "description": "Hand-curated security pins, not ordinary dependencies. In `overrides`, the KEY encodes the vulnerable range and the value is the patched floor, so Renovate reads the value as a plain range and offers the latest major — which forces that major on every transitive consumer matched by the key. On blue-skysolutions.com that turned `js-yaml@>=3.0.0 <3.15.0` into ^4.3.1, forcing @istanbuljs/load-nyc-config across the safeLoad API removal. Advisory bumps here have to be made by hand, against the advisory's own fix floor.",
+      "matchDepTypes": [
+        "pnpm-workspace.overrides",
+        "pnpm.overrides",
+        "overrides",
+        "resolutions"
+      ],
+      "enabled": false
+    },
+    {
       "description": "First-party packages: group + automerge minor/patch on green CI once a release has aged a day. Majors are breaking by semver, so they open a normal PR for human review. Automerge assumes the consuming repo gates merges on required status checks.",
       "matchPackageNames": ["@corey-alan-consulting/**"],
       "matchUpdateTypes": ["minor", "patch"],

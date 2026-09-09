@@ -20,7 +20,7 @@ inputs:
     description: sk_live_* release key for reading the announcement artifact.
     required: true
   github_token:
-    description: Token with `contents: write` on this repo, to patch the release.
+    description: "Token with `contents: write` on this repo, to patch the release."
     required: true
 
 runs:

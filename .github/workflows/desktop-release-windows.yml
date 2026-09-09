@@ -16,6 +16,11 @@ name: Desktop release (Windows)
 on:
   workflow_call:
     inputs:
+      build-timeout-minutes:
+        description: 'Job timeout; a hung build/notarization otherwise burns the 360-minute default'
+        required: false
+        type: number
+        default: 60
       version:
         required: false
         type: string
@@ -110,6 +115,7 @@ jobs:
   build-windows:
     name: Build Windows
     runs-on: ${{ inputs.runner }}
+    timeout-minutes: ${{ inputs.build-timeout-minutes }}
     environment: ${{ inputs.turbo-cache-environment }}
     steps:
       - name: Build scaffold (checkout, secrets, install, build, prebuild)

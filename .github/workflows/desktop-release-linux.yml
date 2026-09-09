@@ -14,6 +14,11 @@ name: Desktop release (Linux Snap)
 on:
   workflow_call:
     inputs:
+      build-timeout-minutes:
+        description: 'Job timeout; a hung build/notarization otherwise burns the 360-minute default'
+        required: false
+        type: number
+        default: 45
       version:
         description: 'Marketing version to stamp into snapcraft.yaml (leading v is stripped)'
         required: true
@@ -89,6 +94,7 @@ jobs:
   build-linux:
     name: Build Linux Snap
     runs-on: ${{ inputs.runner }}
+    timeout-minutes: ${{ inputs.build-timeout-minutes }}
     environment: ${{ inputs.turbo-cache-environment }}
     steps:
       - name: Build scaffold (checkout, secrets, install, build, prebuild)

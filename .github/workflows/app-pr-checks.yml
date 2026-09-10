@@ -1,0 +1,291 @@
+# =============================================================================
+# App PR checks — the org's standard PR gate as ONE reviewed implementation.
+#
+# The 2026-09 CI fleet review found six app repos drifted into six different
+# security postures (only some had a blocking Trivy gate, hard SARIF upload,
+# gitleaks, conventional-commit, ci-gates). Repos hand-rolled pr-checks.yml by
+# design, and that design decision was the root cause. This reusable workflow
+# is the fix: repos call it for the common core and keep only genuinely local
+# jobs (DB integration suites, a11y runs) in their own file.
+#
+# Gates carried here (standards/ci-cd.md):
+#   conventional-commit · lint/type-check/test · pnpm audit (advisory) ·
+#   Trivy two-step (full-severity SARIF uploaded HARD + blocking fixable-
+#   CRITICAL table gate) · gitleaks PR-range secret scan · ci-gates guard
+#
+# The ci-gates guard is embedded inline and scans the CALLER's workflow files,
+# so repos no longer vendor scripts/check-ci-gates.sh — and a caller cannot
+# soften gates that live in this file at all.
+#
+# Caller contract (permissions the caller job must grant):
+#   permissions:
+#     actions: read          # upload-sarif on private repos
+#     contents: read
+#     security-events: write # SARIF upload
+#     pull-requests: read    # conventional-commit
+#   jobs:
+#     checks:
+#       uses: Corey-Alan-Consulting/deploy-workflows/.github/workflows/app-pr-checks.yml@<sha> # vX.Y.Z
+#       with:
+#         pre-test-command: pnpm db:generate   # omit if no Prisma
+#       secrets:
+#         npm-token: ${{ secrets.NPM_TOKEN }}
+# =============================================================================
+
+name: App PR checks
+
+on:
+  workflow_call:
+    inputs:
+      node-version:
+        description: 'Node version for test/security jobs'
+        required: false
+        type: string
+        default: '22'
+      pre-test-command:
+        description: 'Run after install, before lint (e.g. "pnpm db:generate"); empty skips'
+        required: false
+        type: string
+        default: ''
+      lint-command:
+        required: false
+        type: string
+        default: 'pnpm lint'
+      type-check-command:
+        required: false
+        type: string
+        default: 'pnpm type-check'
+      test-command:
+        required: false
+        type: string
+        default: 'pnpm test -- --passWithNoTests'
+      audit-level:
+        description: 'pnpm audit level (advisory — the blocking gate is Trivy)'
+        required: false
+        type: string
+        default: 'high'
+      trivy-skip-dirs:
+        required: false
+        type: string
+        default: 'node_modules,.next,.git,.pnpm-store,coverage,dist,.turbo'
+      template-tokens-check:
+        description: 'Scaffolded repos: fail if deploy.yml still carries <bws-uuid>-style tokens'
+        required: false
+        type: boolean
+        default: false
+    secrets:
+      npm-token:
+        description: 'Read token for the private @corey-alan-consulting npm scope'
+        required: false
+
+jobs:
+  conventional-commit:
+    name: Conventional Commit Check
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - uses: amannn/action-semantic-pull-request@48f256284bd46cdaab1048c3721360e808335d50 # v6.1.1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          types: |
+            feat
+            fix
+            chore
+            docs
+            style
+            refactor
+            perf
+            test
+            build
+            ci
+            revert
+          requireScope: false
+          subjectPattern: ^.+$
+
+  test:
+    name: Test & Quality
+    if: github.event.action != 'edited'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
+        with:
+          run_install: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: ${{ inputs.node-version }}
+          cache: 'pnpm'
+          registry-url: 'https://registry.npmjs.org'
+          scope: '@corey-alan-consulting'
+          always-auth: true
+      - name: Install dependencies
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.npm-token }}
+        run: pnpm install --frozen-lockfile
+      - name: Pre-test setup
+        if: inputs.pre-test-command != ''
+        env:
+          PRE_TEST: ${{ inputs.pre-test-command }}
+        run: eval "$PRE_TEST"
+      - name: Lint
+        env:
+          LINT: ${{ inputs.lint-command }}
+        run: eval "$LINT"
+      - name: Type check
+        env:
+          TYPE_CHECK: ${{ inputs.type-check-command }}
+        run: eval "$TYPE_CHECK"
+      - name: Test
+        env:
+          TEST: ${{ inputs.test-command }}
+        run: eval "$TEST"
+
+  security:
+    name: Security Scan
+    if: github.event.action != 'edited'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
+        with:
+          run_install: false
+      # Advisory: registry-backed audit needs only the lockfile, not an install.
+      - name: pnpm audit (advisory)
+        env:
+          AUDIT_LEVEL: ${{ inputs.audit-level }}
+        run: pnpm audit --audit-level="$AUDIT_LEVEL"
+        continue-on-error: true
+      # Full-severity SARIF report for code scanning (non-blocking scan). Kept
+      # separate from the gate: trivy-action drops the severity filter in
+      # sarif mode, so a combined step with exit-code 1 fails on ANY finding.
+      - name: Trivy SARIF report
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          scan-type: fs
+          scan-ref: .
+          format: sarif
+          output: trivy-results.sarif
+          skip-dirs: ${{ inputs.trivy-skip-dirs }}
+      # NOT continue-on-error: a failing upload means code scanning silently
+      # stops receiving results (standards/ci-cd.md gate #1).
+      - uses: github/codeql-action/upload-sarif@54f647b7e1bb85c95cddabcd46b0c578ec92bc1a # v4.36.3
+        if: hashFiles('trivy-results.sarif') != ''
+        with:
+          sarif_file: trivy-results.sarif
+          category: trivy-fs
+      # Blocking gate on fixable CRITICAL — matches the org deploy gate.
+      # Table format honors the severity filter (sarif mode does not).
+      - name: Trivy gate (fixable CRITICAL)
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          scan-type: fs
+          scan-ref: .
+          format: table
+          severity: CRITICAL
+          ignore-unfixed: true
+          exit-code: '1'
+          skip-dirs: ${{ inputs.trivy-skip-dirs }}
+
+  secret-scan:
+    name: Secret Scan (gitleaks)
+    if: github.head_ref != 'changeset-release/main' && github.event.action != 'edited'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # Full history so the base..head PR range resolves for the scan.
+          fetch-depth: 0
+          persist-credentials: false
+      # The gitleaks BINARY (MIT, free, unlimited repos) — the gitleaks-action
+      # requires a paid GITLEAKS_LICENSE for org accounts. Checksum-verified.
+      - name: Install gitleaks
+        env:
+          GITLEAKS_VERSION: '8.30.1'
+        run: |
+          set -euo pipefail
+          base="https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}"
+          tarball="gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          curl -sSfL "${base}/${tarball}" -o "${tarball}"
+          curl -sSfL "${base}/gitleaks_${GITLEAKS_VERSION}_checksums.txt" -o checksums.txt
+          grep " ${tarball}\$" checksums.txt | sha256sum -c -
+          tar -xzf "${tarball}" gitleaks
+          ./gitleaks version
+      # Scan only the commits this PR introduces: a NEW hardcoded secret fails
+      # the build; historical findings don't re-flag every PR.
+      - name: Scan PR commits for secrets
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          ./gitleaks git --no-banner --redact --exit-code 1 \
+            --log-opts="${BASE_SHA}..${HEAD_SHA}"
+
+  # Guards the caller's OTHER workflows (deploy.yml, staging-smoke.yml, …):
+  # SARIF uploads, Trivy exit-code gates and cosign steps must not be
+  # continue-on-error'd. The gates in THIS file are out of callers' reach.
+  ci-gates:
+    name: CI gates intact
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Non-negotiable gates are not softened
+        run: |
+          set -euo pipefail
+          status=0
+          for file in .github/workflows/*.yml .github/workflows/*.yaml; do
+            [ -e "$file" ] || continue
+            awk -v file="$file" '
+              function flush() {
+                if (prot && soft) {
+                  printf "%s:%d: %s is a non-negotiable gate and must not be continue-on-error\n", file, line, label
+                  bad++
+                }
+                prot = 0; soft = 0; label = ""; line = 0
+              }
+              /^[[:space:]]*-[[:space:]]/ { flush(); line = NR }
+              /upload-sarif/              { prot = 1; label = "CodeQL SARIF upload" }
+              /exit-code:[[:space:]]*.1./ { prot = 1; label = "Trivy severity gate" }
+              /cosign/                    { prot = 1; label = "image signing" }
+              /continue-on-error:[[:space:]]*true/ { soft = 1 }
+              END { flush(); exit (bad > 0) }
+            ' "$file" || status=1
+          done
+          if [ "$status" -ne 0 ]; then
+            echo ""
+            echo "Fix by removing the continue-on-error, not by narrowing the gate."
+            echo "See framework standards/ci-cd.md, 'Security gates — non-negotiable'."
+            exit 1
+          fi
+          echo "CI gates intact."
+
+  # Scaffolded repos: a template token left in deploy.yml deploys green while
+  # the secret behind it is silently missing (the reggiesbbq Sentry incident).
+  template-tokens:
+    name: Template Token Check
+    if: inputs.template-tokens-check
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: deploy.yml must carry no template tokens
+        run: |
+          if grep -nE '<(bws-uuid|bws-project-uuid|gcp-project-id|gcp-project-number)>' .github/workflows/deploy.yml; then
+            echo '::error file=.github/workflows/deploy.yml::Unfilled template token(s) — fill the real value(s); a placeholder here deploys green while the secret is silently missing.'
+            exit 1
+          fi
+          grep -nE '<(bws-project-uuid|gcp-project-id)>' .envrc && \
+            echo '::warning file=.envrc::Template token(s) still in .envrc — local dev setup is broken until filled.' || true

@@ -332,3 +332,59 @@ test('buildPrompt omits changelogUrl from the contract when none is configured',
   });
   assert.ok(!prompt.includes('changelogUrl'));
 });
+
+// Capturly 2.11.0 did not announce: the model closed a string with a raw
+// newline, JSON.parse threw out of draftArtifact, and the action died. The
+// retry that exists for a structurally wrong artifact never ran, because it
+// sits behind the parse. A re-run then succeeded on the first attempt, which
+// is what makes this worth retrying rather than failing.
+const UNTERMINATED = '{"title":"Capturly 2.11.0","body":"Fixed macOS stop/save\n';
+
+test('editorial retries when the model returns unparseable JSON', async () => {
+  let calls = 0;
+  const fetchImpl = async (_url, init) => {
+    calls++;
+    if (calls === 1) {
+      return { ok: true, json: async () => ({ content: [{ text: UNTERMINATED }] }) };
+    }
+    // Assert the FEEDBACK turn, not the whole array — the prompt itself says
+    // "JSON", so matching the array proves nothing about what we sent back.
+    const messages = JSON.parse(init.body).messages;
+    assert.match(messages.at(-1).content, /not valid JSON/);
+    return { ok: true, json: async () => ({ content: [{ text: JSON.stringify(GOOD_ARTIFACT) }] }) };
+  };
+
+  const artifact = await editorial({ token: 'sk-ant-oat01-k', prompt: 'p', fetchImpl });
+
+  assert.equal(calls, 2);
+  assert.equal(artifact.title, 'Dispatchr 0.4.2');
+});
+
+test('editorial reports the parse failure when the retry is also unparseable', async () => {
+  const fetchImpl = async () => ({
+    ok: true,
+    json: async () => ({ content: [{ text: UNTERMINATED }] }),
+  });
+
+  // Naming the cause matters: the raw SyntaxError sent us looking for a
+  // broken release rather than a flaky draft.
+  await assert.rejects(
+    editorial({ token: 'sk-ant-oat01-k', prompt: 'p', fetchImpl }),
+    /after retry/
+  );
+});
+
+// A response cut off at max_tokens produces the identical "Unterminated
+// string" SyntaxError, so without this the two are indistinguishable and the
+// retry burns an API call on a request that will truncate again.
+test('editorial says so when the response was truncated at max_tokens', async () => {
+  const fetchImpl = async () => ({
+    ok: true,
+    json: async () => ({ content: [{ text: UNTERMINATED }], stop_reason: 'max_tokens' }),
+  });
+
+  await assert.rejects(
+    editorial({ token: 'sk-ant-oat01-k', prompt: 'p', fetchImpl }),
+    /max_tokens/
+  );
+});

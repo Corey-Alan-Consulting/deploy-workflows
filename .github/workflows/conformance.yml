@@ -47,7 +47,9 @@ jobs:
           pipx install 'zizmor==1.29.0'
           # Offline audits only — deterministic, no API budget; the repo's own
           # .github/zizmor.yml policy applies automatically when present.
-          zizmor --no-progress .github/workflows
+          # Gate at low+: informational findings (e.g. use-trusted-publishing
+          # advice) print but must not fail an org-wide required check.
+          zizmor --no-progress --min-severity=low .github/workflows
 
       - name: Non-negotiable CI gates are not softened
         run: |

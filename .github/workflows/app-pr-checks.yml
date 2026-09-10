@@ -108,6 +108,11 @@ jobs:
     if: github.event.action != 'edited'
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    env:
+      # Large Next.js apps outgrow Node's default heap during tsc/next builds
+      # (coreyalan tsc OOM'd at the default; capturly documents the same).
+      # 4 GB fits every GitHub-hosted runner.
+      NODE_OPTIONS: --max-old-space-size=4096
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

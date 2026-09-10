@@ -68,12 +68,15 @@ jobs:
         with:
           app-id: ${{ secrets.app-id }}
           private-key: ${{ secrets.app-private-key }}
+          # Least privilege: push the changeset branch + open the PR.
+          permission-contents: write
+          permission-pull-requests: write
 
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ inputs.base-branch }}
           fetch-depth: 0
-          token: ${{ steps.app-token.outputs.token }}
+          persist-credentials: false
 
       - name: Open a changeset PR if the merge released nothing
         env:
@@ -100,7 +103,10 @@ jobs:
           fi
 
           branch="chore/changeset-renovate-pr${PR_NUMBER}"
-          if git ls-remote --exit-code origin "refs/heads/${branch}" >/dev/null 2>&1; then
+          # Authenticated URL: checkout does not persist credentials, so plain
+          # `origin` has no auth against the private repo.
+          remote="https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          if git ls-remote --exit-code "$remote" "refs/heads/${branch}" >/dev/null 2>&1; then
             echo "Changeset branch already exists — skipping (idempotent rerun)."
             exit 0
           fi
@@ -120,7 +126,8 @@ jobs:
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git add "$file"
           git commit -m "chore: changeset for Renovate PR #${PR_NUMBER}"
-          git push origin "$branch"
+          # Push with the App token explicitly (checkout does not persist creds).
+          git push "$remote" "HEAD:refs/heads/${branch}"
 
           gh pr create \
             --base "$BASE" \

@@ -18,6 +18,11 @@ name: Desktop release (macOS)
 on:
   workflow_call:
     inputs:
+      build-timeout-minutes:
+        description: 'Job timeout; a hung build/notarization otherwise burns the 360-minute default'
+        required: false
+        type: number
+        default: 75
       version:
         description: 'Marketing version being released (informational; electron-builder reads package.json)'
         required: false
@@ -117,6 +122,7 @@ jobs:
   build-macos:
     name: Build macOS
     runs-on: ${{ inputs.runner }}
+    timeout-minutes: ${{ inputs.build-timeout-minutes }}
     environment: ${{ inputs.turbo-cache-environment }}
     steps:
       - name: Build scaffold (checkout, secrets, install, build, prebuild)

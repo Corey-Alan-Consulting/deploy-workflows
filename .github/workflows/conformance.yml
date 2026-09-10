@@ -1,0 +1,80 @@
+# =============================================================================
+# Org conformance — the enforcement half of the paved road.
+#
+# Intended to run as an ORG-RULESET REQUIRED WORKFLOW on every PR in every app
+# repo (Enterprise feature): standards stop being prose the moment this is a
+# required check. Three mechanical gates, none repo-specific:
+#
+#   1. actionlint  — workflow schema/expression/shellcheck validation
+#   2. zizmor      — action pinning + workflow security (policy from the
+#                    repo's .github/zizmor.yml when present)
+#   3. ci-gates    — SARIF uploads / Trivy exit-code gates / cosign steps must
+#                    not be continue-on-error'd (standards/ci-cd.md)
+#
+# Rollout: the ruleset starts in EVALUATE mode — results are recorded on the
+# rule insights page without blocking, so repos with a zizmor/actionlint
+# backlog surface it before enforcement flips to active.
+# =============================================================================
+
+name: Org conformance
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  conformance:
+    name: Workflow conformance
+    # Skip in this repo's own PRs: deploy-workflows carries an acknowledged
+    # zizmor backlog (template-injection refactor in build-push-*) tracked by
+    # its own pr-checks zizmor job; the ruleset targets APP repos.
+    if: github.repository != 'Corey-Alan-Consulting/deploy-workflows'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: actionlint
+        uses: raven-actions/actionlint@3d39aea434753780c3b3d4a1a31c854b4dbf49d7 # v2.2.0
+
+      - name: zizmor
+        run: |
+          set -euo pipefail
+          pipx install 'zizmor==1.29.0'
+          # Offline audits only — deterministic, no API budget; the repo's own
+          # .github/zizmor.yml policy applies automatically when present.
+          zizmor --no-progress .github/workflows
+
+      - name: Non-negotiable CI gates are not softened
+        run: |
+          set -euo pipefail
+          status=0
+          for file in .github/workflows/*.yml .github/workflows/*.yaml; do
+            [ -e "$file" ] || continue
+            awk -v file="$file" '
+              function flush() {
+                if (prot && soft) {
+                  printf "%s:%d: %s is a non-negotiable gate and must not be continue-on-error\n", file, line, label
+                  bad++
+                }
+                prot = 0; soft = 0; label = ""; line = 0
+              }
+              /^[[:space:]]*-[[:space:]]/ { flush(); line = NR }
+              /upload-sarif/              { prot = 1; label = "CodeQL SARIF upload" }
+              /exit-code:[[:space:]]*.1./ { prot = 1; label = "Trivy severity gate" }
+              /cosign/                    { prot = 1; label = "image signing" }
+              /continue-on-error:[[:space:]]*true/ { soft = 1 }
+              END { flush(); exit (bad > 0) }
+            ' "$file" || status=1
+          done
+          if [ "$status" -ne 0 ]; then
+            echo ""
+            echo "Fix by removing the continue-on-error, not by narrowing the gate."
+            echo "See framework standards/ci-cd.md, 'Security gates — non-negotiable'."
+            exit 1
+          fi
+          echo "CI gates intact."

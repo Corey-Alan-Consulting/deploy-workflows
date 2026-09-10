@@ -1,0 +1,136 @@
+# =============================================================================
+# Renovate changeset — closes the "merged but never released" hole.
+#
+# In changeset-released repos, a Renovate dependency bump merges without a
+# changeset, so no Version Packages PR is minted and the fix never ships
+# (found the hard way with CVE-2026-75604: two apps merged the next patch and
+# stranded it on main). This reusable workflow runs from a caller's
+# `pull_request: [closed]` trigger: when a merged Renovate PR touched the
+# lockfile and carried no changeset, it opens a changeset PR via the GitOps
+# App (App-token PRs trigger CI; GITHUB_TOKEN ones do not).
+#
+# Deliberately fail-safe: ANY lockfile-touching Renovate merge gets a
+# changeset, including devDependency-only bumps. A false positive costs one
+# harmless patch release; a false negative strands a security fix — the
+# asymmetry that motivated this workflow.
+#
+# Caller contract:
+#   on:
+#     pull_request:
+#       types: [closed]
+#       branches: [main]
+#   jobs:
+#     changeset:
+#       if: github.event.pull_request.merged == true &&
+#           github.event.pull_request.user.login == 'renovate[bot]'
+#       uses: Corey-Alan-Consulting/deploy-workflows/.github/workflows/renovate-changeset.yml@<sha> # vX.Y.Z
+#       with:
+#         changeset-frontmatter: "'my-package': patch"
+#       secrets:
+#         app-id: ${{ secrets.GITOPS_APP_ID }}
+#         app-private-key: ${{ secrets.GITOPS_APP_PRIVATE_KEY }}
+# =============================================================================
+
+name: Renovate changeset
+
+on:
+  workflow_call:
+    inputs:
+      changeset-frontmatter:
+        description: >-
+          Package bump lines for the changeset frontmatter, e.g.
+          "'blue-skysolutions': patch" (multi-line for several packages).
+        required: true
+        type: string
+      base-branch:
+        description: 'Branch releases are cut from'
+        required: false
+        type: string
+        default: main
+    secrets:
+      app-id:
+        required: true
+      app-private-key:
+        required: true
+
+permissions: {}
+
+jobs:
+  changeset:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    concurrency:
+      group: renovate-changeset-${{ github.event.pull_request.number }}
+      cancel-in-progress: false
+    steps:
+      - uses: actions/create-github-app-token@d72941d797fd3113feb6b93fd0dec494b13a2547 # v1
+        id: app-token
+        with:
+          app-id: ${{ secrets.app-id }}
+          private-key: ${{ secrets.app-private-key }}
+          # Least privilege: push the changeset branch + open the PR.
+          permission-contents: write
+          permission-pull-requests: write
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.base-branch }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Open a changeset PR if the merge released nothing
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          # Untrusted (Renovate-authored) values stay in env vars — never
+          # interpolated into the script text.
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          MERGE_SHA: ${{ github.event.pull_request.merge_commit_sha }}
+          FRONTMATTER: ${{ inputs.changeset-frontmatter }}
+          BASE: ${{ inputs.base-branch }}
+        run: |
+          set -euo pipefail
+
+          files=$(git diff --name-only "${MERGE_SHA}^" "${MERGE_SHA}")
+
+          if grep -q '^\.changeset/.*\.md$' <<<"$files"; then
+            echo "Merged PR already carried a changeset — nothing to do."
+            exit 0
+          fi
+          if ! grep -qE '(^|/)pnpm-lock\.yaml$' <<<"$files"; then
+            echo "No lockfile change — nothing shipped changed; no release needed."
+            exit 0
+          fi
+
+          branch="chore/changeset-renovate-pr${PR_NUMBER}"
+          # Authenticated URL: checkout does not persist credentials, so plain
+          # `origin` has no auth against the private repo.
+          remote="https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          if git ls-remote --exit-code "$remote" "refs/heads/${branch}" >/dev/null 2>&1; then
+            echo "Changeset branch already exists — skipping (idempotent rerun)."
+            exit 0
+          fi
+
+          git checkout -B "$branch" "origin/${BASE}"
+          mkdir -p .changeset
+          file=".changeset/renovate-pr${PR_NUMBER}.md"
+          {
+            echo '---'
+            printf '%s\n' "$FRONTMATTER"
+            echo '---'
+            echo
+            printf 'Dependency update: %s (#%s).\n' "$PR_TITLE" "$PR_NUMBER"
+          } > "$file"
+
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add "$file"
+          git commit -m "chore: changeset for Renovate PR #${PR_NUMBER}"
+          # Push with the App token explicitly (checkout does not persist creds).
+          git push "$remote" "HEAD:refs/heads/${branch}"
+
+          gh pr create \
+            --base "$BASE" \
+            --head "$branch" \
+            --title "chore: changeset for Renovate PR #${PR_NUMBER}" \
+            --body "Renovate merged a lockfile-changing dependency update without a changeset, so nothing would release. This patch changeset mints the release. Source: #${PR_NUMBER} (\"${PR_TITLE}\")."

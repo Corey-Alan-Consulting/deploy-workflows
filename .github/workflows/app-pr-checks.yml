@@ -287,5 +287,6 @@ jobs:
             echo '::error file=.github/workflows/deploy.yml::Unfilled template token(s) — fill the real value(s); a placeholder here deploys green while the secret is silently missing.'
             exit 1
           fi
-          grep -nE '<(bws-project-uuid|gcp-project-id)>' .envrc && \
-            echo '::warning file=.envrc::Template token(s) still in .envrc — local dev setup is broken until filled.' || true
+          if grep -nE '<(bws-project-uuid|gcp-project-id)>' .envrc; then
+            echo '::warning file=.envrc::Template token(s) still in .envrc — local dev setup is broken until filled.'
+          fi

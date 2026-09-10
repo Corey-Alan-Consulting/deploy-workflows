@@ -27,6 +27,10 @@ permissions:
 jobs:
   conformance:
     name: Workflow conformance
+    # Skip in this repo's own PRs: deploy-workflows carries an acknowledged
+    # zizmor backlog (template-injection refactor in build-push-*) tracked by
+    # its own pr-checks zizmor job; the ruleset targets APP repos.
+    if: github.repository != 'Corey-Alan-Consulting/deploy-workflows'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:

@@ -6,6 +6,7 @@
 
 const ANTHROPIC_URL = 'https://api.anthropic.com/v1/messages';
 const MODEL = 'claude-sonnet-5';
+const MAX_TOKENS = 4096;
 
 export function buildPrompt({
   productName,
@@ -115,27 +116,47 @@ export async function draftArtifact({
       authorization: `Bearer ${token}`,
       'anthropic-version': '2023-06-01',
     },
-    body: JSON.stringify({ model: MODEL, max_tokens: 4096, messages }),
+    body: JSON.stringify({ model: MODEL, max_tokens: MAX_TOKENS, messages }),
   });
   if (!res.ok) {
     throw new Error(`Anthropic API ${res.status}: ${(await res.text()).slice(0, 300)}`);
   }
   const body = await res.json();
   const text = body.content?.map(block => block.text ?? '').join('') ?? '';
-  return { text, artifact: parseModelJson(text) };
+
+  // A malformed draft is reported like any other bad draft rather than thrown.
+  // Throwing here jumped over the retry below, so a model that closed a string
+  // with a raw newline killed the release announcement outright — which is how
+  // Capturly 2.11.0 shipped without one. The very next attempt parsed fine.
+  try {
+    return { text, artifact: parseModelJson(text), errors: [] };
+  } catch (err) {
+    // A response cut off at max_tokens ends mid-string, and JSON.parse reports
+    // that as an unterminated string — the same words a complete-but-malformed
+    // response produces. Distinguish them, because only one is worth retrying
+    // unchanged and the raw SyntaxError sent us hunting a broken release.
+    const detail =
+      body.stop_reason === 'max_tokens'
+        ? `stop_reason=max_tokens: the draft hit the ${MAX_TOKENS}-token ceiling and stops mid-JSON (${err.message})`
+        : `response was not valid JSON: ${err.message}`;
+    return { text, artifact: null, errors: [detail] };
+  }
 }
 
-/** Draft with one structural-validation retry. */
+/** Draft with one retry, covering a malformed response as well as a
+ *  well-formed one that misses the contract. */
 export async function editorial(opts) {
   const first = await draftArtifact(opts);
-  let errors = validateArtifact(first.artifact);
+  // A draft that never parsed has no artifact to validate; its own error is
+  // the feedback.
+  let errors = first.errors.length > 0 ? first.errors : validateArtifact(first.artifact);
   if (errors.length === 0) return first.artifact;
 
   const second = await draftArtifact({
     ...opts,
     feedback: { previous: first.text, errors },
   });
-  errors = validateArtifact(second.artifact);
+  errors = second.errors.length > 0 ? second.errors : validateArtifact(second.artifact);
   if (errors.length > 0) {
     throw new Error(`AI artifact failed validation after retry: ${errors.join('; ')}`);
   }

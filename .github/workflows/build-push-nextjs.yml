@@ -896,7 +896,7 @@ jobs:
         if: always() && hashFiles('trivy-image-results.sarif') != ''
         with:
           sarif_file: trivy-image-results.sarif
-        continue-on-error: true
+          category: trivy-image
 
   # ===========================================================================
   # Cleanup Old Images

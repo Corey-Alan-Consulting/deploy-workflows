@@ -24,6 +24,18 @@ on:
         description: 'Version to promote to stable (must match the current beta head)'
         required: true
         type: string
+      snap-name:
+        description: >-
+          Snap Store package to promote latest/beta -> latest/stable alongside
+          the R2 feed flip. Empty skips the snap leg (repos without a snap).
+        required: false
+        type: string
+        default: ''
+      snap-secret-ids:
+        description: 'Bitwarden mapping providing SNAPCRAFT_STORE_CREDENTIALS (required when snap-name is set)'
+        required: false
+        type: string
+        default: ''
       staging-percentage:
         description: 'Staged rollout percent for stable clients (1-100)'
         required: false
@@ -154,3 +166,43 @@ jobs:
           promote_alias "${INSTALLER}-Setup-$VERSION.exe" "${INSTALLER}-Setup.exe"
 
           echo "Done. Stable clients pick up v$VERSION on their next update poll."
+
+  promote-snap:
+    name: Promote snap beta → stable
+    if: ${{ inputs.snap-name != '' && github.actor_id == inputs.port-actor-id && github.triggering_actor == github.actor }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Get Snap Store credentials from Bitwarden
+        uses: bitwarden/sm-action@1238aae8fc64b212641190a9227c8a734ab1a793 # v3.0.1
+        with:
+          access_token: ${{ secrets.bws-token-signing }}
+          secrets: ${{ inputs.snap-secret-ids }}
+
+      - name: Install snapcraft
+        run: sudo snap install snapcraft --classic
+
+      # Release the CURRENT beta revision to stable. Parsing `snapcraft status`
+      # is the only non-interactive way to resolve the revision; the beta row's
+      # last column is the revision ("-" when the channel is closed).
+      - name: Release latest/beta revision to latest/stable
+        env:
+          SNAP_NAME: ${{ inputs.snap-name }}
+          EXPECT_VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          status=$(snapcraft status "$SNAP_NAME")
+          echo "$status"
+          rev=$(printf '%s\n' "$status" | awk '$0 ~ /(^|[[:space:]])beta([[:space:]]|$)/ {print $NF; exit}')
+          if [ -z "$rev" ] || [ "$rev" = "-" ]; then
+            echo "::error::no revision on latest/beta for $SNAP_NAME — nothing to promote"
+            exit 1
+          fi
+          ver=$(printf '%s\n' "$status" | awk '$0 ~ /(^|[[:space:]])beta([[:space:]]|$)/ {print $(NF-1); exit}')
+          want="${EXPECT_VERSION#v}"
+          if [ -n "$ver" ] && [ "$ver" != "$want" ]; then
+            echo "::error::beta head is v$ver but promotion asked for v$want — refusing (stale beta?)"
+            exit 1
+          fi
+          snapcraft release "$SNAP_NAME" "$rev" latest/stable
+          echo "Released $SNAP_NAME revision $rev (v$ver) to latest/stable."

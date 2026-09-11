@@ -61,9 +61,14 @@ on:
         type: string
         default: '.'
       snap-channel:
+        description: >-
+          Channel the built snap is released to. Defaults to beta so Linux
+          goes through the same Port promotion gate as macOS/Windows (which
+          publish to the R2 beta feed) instead of shipping straight to every
+          user at build time; promote-desktop's snap leg moves beta -> stable.
         required: false
         type: string
-        default: stable
+        default: beta
       signing-secret-ids:
         required: true
         type: string

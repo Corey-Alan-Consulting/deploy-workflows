@@ -196,6 +196,11 @@ jobs:
 
       - name: Setup Android SDK
         uses: android-actions/setup-android@40fd30fb8d7440372e1316f5d1809ec01dcd3699 # v4.0.1
+        with:
+          # The action's default package list still includes legacy 'tools',
+          # which Google removed — the runners' cmdline-tools 20 sdkmanager
+          # exits 1 on it. Gradle installs build-tools/platforms itself.
+          packages: platform-tools
 
       - name: Load signing secrets
         uses: bitwarden/sm-action@1238aae8fc64b212641190a9227c8a734ab1a793 # v3.0.1

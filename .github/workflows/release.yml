@@ -93,7 +93,7 @@ jobs:
           # commit + tags. This intentionally keeps credentials in the checkout.
           token: ${{ steps.app-token.outputs.token }}
 
-      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
         with:
           run_install: false
 
@@ -117,7 +117,7 @@ jobs:
 
       - name: Create Release PR or tag versions
         id: changesets
-        uses: changesets/action@8488615a623b1b9c987934bb89eae8af6a946ac1 # v2.1.1
+        uses: changesets/action@ae32849d5ba541f9ae29e40e22a623bc13562f51 # v2.1.2
         with:
           # changesets/action v2 renamed these inputs and hard-errors on the
           # old names — the dependabot v2 bump landed without this migration.

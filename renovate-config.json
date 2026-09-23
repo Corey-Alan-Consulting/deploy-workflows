@@ -15,6 +15,15 @@
       "token": "{{ secrets.NPM_READ_TOKEN }}"
     }
   ],
+  "customManagers": [
+    {
+      "customType": "regex",
+      "description": "BuildKit pin in setup-buildx-action driver-opts. Nothing else watches this: `driver-opts: image=moby/buildkit:<tag>` is not a dependency file, not an action ref and not a Dockerfile FROM, so every built-in manager skips it and the pin ages silently. #6's pin went three releases stale exactly this way, and #73's first cut was stale within twenty minutes of being written. Deliberately requires a numeric tag so the floating `buildx-stable-1` this pin exists to replace is never matched.",
+      "fileMatch": ["^\\.github/workflows/[^/]+\\.ya?ml$"],
+      "matchStrings": ["driver-opts:\\s*image=(?<depName>moby/buildkit):(?<currentValue>v?[0-9][^\\s\"']*)"],
+      "datasourceTemplate": "docker"
+    }
+  ],
   "packageRules": [
     {
       "description": "Hand-curated security pins, not ordinary dependencies. In `overrides`, the KEY encodes the vulnerable range and the value is the patched floor, so Renovate reads the value as a plain range and offers the latest major — which forces that major on every transitive consumer matched by the key. On blue-skysolutions.com that turned `js-yaml@>=3.0.0 <3.15.0` into ^4.3.1, forcing @istanbuljs/load-nyc-config across the safeLoad API removal. Advisory bumps here have to be made by hand, against the advisory's own fix floor.",

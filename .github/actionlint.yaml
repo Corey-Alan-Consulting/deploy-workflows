@@ -8,6 +8,9 @@
 # malformed `uses:` still fails here and everywhere else. Delete when
 # actionlint ships support.
 paths:
+  .github/workflows/release-announce.yml:
+    ignore:
+      - 'specifying action "\$/[^"]*" in invalid format because ref is missing'
   .github/workflows/release-announce-send.yml:
     ignore:
       - 'specifying action "\$/[^"]*" in invalid format because ref is missing'

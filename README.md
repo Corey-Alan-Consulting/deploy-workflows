@@ -664,11 +664,13 @@ brand repo:
   POSTs the idempotent send (`Idempotency-Key` = the Port run id). Nothing
   sends at tag time, ever.
 
-**Pinning exception:** callers reference these two workflows `@main` — the
-Anthropic token exchange federates on this reusable workflow's
-`job_workflow_ref`, and a SHA-pinned caller would change that OIDC claim and
-break the exchange. Every other workflow in this repo follows the
-SHA-pin rule below.
+**Pinning:** callers pin these two workflows to a release commit SHA like
+every other workflow in this repo. The Anthropic federation rule matches
+`job_workflow_ref` by CEL prefix (`…/release-announce.yml@` + owner check),
+so the ref a caller names — SHA, tag, or branch — does not affect the token
+exchange. (Historical note: the rule originally exact-matched
+`@refs/heads/main`, which forced callers onto the mutable branch head and
+broke announcements twice when hardening sweeps pinned them — see issue #76.)
 
 Per-brand wiring: a `sk_live_*` release key in Bitwarden
 (`release_key_secret_id`), `BWS_TOKEN_BUILD` + `BWS_TOKEN_PLATFORM`, and the

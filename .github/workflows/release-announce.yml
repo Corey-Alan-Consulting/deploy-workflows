@@ -123,10 +123,12 @@ jobs:
             ${{ inputs.release_key_secret_id }} > COREYALAN_RELEASE_API_KEY
 
       # Keyless Anthropic auth: exchange this job's GitHub OIDC token for a
-      # short-lived Anthropic access token. The federation rule is pinned to
-      # THIS reusable workflow's job_workflow_ref, so only runs of this
-      # builder (from any org repo) can mint a token — no per-brand API key,
-      # nothing to rotate. All five ANTHROPIC_* values are non-secret ids.
+      # short-lived Anthropic access token. The federation rule CEL-matches
+      # job_workflow_ref by prefix (this workflow's path + "@", any ref) plus
+      # repository_owner, so only runs of this builder from an org repo can
+      # mint a token — callers may pin to a SHA without breaking the claim.
+      # No per-brand API key, nothing to rotate. All five ANTHROPIC_* values
+      # are non-secret ids.
       - name: Mint federated Anthropic token
         id: anthropic
         env:
@@ -157,9 +159,13 @@ jobs:
           echo "::add-mask::$TOKEN"
           echo "token=$TOKEN" >> "$GITHUB_OUTPUT"
 
+      # `$/` resolves to THIS repository at the exact commit already running
+      # (same pattern as release-announce-send.yml's backfill step) — a
+      # SHA-pinned caller executes the action from that SHA, not from a
+      # mutable branch head.
       - name: Build and upsert draft
         id: draft
-        uses: Corey-Alan-Consulting/deploy-workflows/.github/actions/build-release-announcement@main
+        uses: $/.github/actions/build-release-announcement
         with:
           version: ${{ steps.version.outputs.version }}
           product_name: ${{ inputs.product_name }}

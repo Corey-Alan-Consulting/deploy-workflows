@@ -44,15 +44,6 @@
       "minimumReleaseAge": "1 day"
     },
     {
-      "description": "NEVER pin the release-announcement callers. Anthropic's workload-identity federation rule matches the reusable workflow's `job_workflow_ref`, which contains the ref — pinning `@main` to a SHA changes it, the federation rule stops matching, and the editorial pass dies on a 401 token exchange. The failure is silent from the release's point of view: the build fails after the release ships, so nobody gets a changelog email and nothing else looks wrong. This exception is codified in framework standards/ci-cd.md; blue-skysolutions.com, coreyalan.com and dispatchr.social were all broken this way in one day.",
-      "matchFileNames": [
-        ".github/workflows/release-announce.yml",
-        ".github/workflows/release-announce-send.yml"
-      ],
-      "matchPackageNames": ["Corey-Alan-Consulting/deploy-workflows"],
-      "enabled": false
-    },
-    {
       "description": "First-party reusable workflows / composite actions: bump the SHA pin when a new deploy-workflows release tag is cut; automerge non-major on green CI, same policy as internal packages.",
       "matchManagers": ["github-actions"],
       "matchPackageNames": ["Corey-Alan-Consulting/deploy-workflows"],

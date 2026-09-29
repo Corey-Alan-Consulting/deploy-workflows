@@ -129,6 +129,30 @@ jobs:
           publish-script: pnpm exec changeset tag
           commit-message: 'chore: release packages'
           pr-title: 'chore: release packages'
+          # Pinned rather than inherited, because the defaults bite.
+          #
+          # v2 defaults `create-github-releases` to true, and its own docs say
+          # of `push-git-tags`: "If `create-github-releases` is set to `true`,
+          # this option will also always be `true`." So the action writes each
+          # tag ref TWICE — once creating the Release (the Releases API creates
+          # the tag) and once pushing tags. Every write is a `push` event, so an
+          # app whose deploy triggers on `push: tags` gets two identical deploy
+          # runs racing on one version. Concurrency is not a reliable backstop:
+          # the two writes land seconds apart and the runs can slip past group
+          # evaluation, which is how gatherbee@0.3.0 built twice.
+          #
+          # Where this workflow cuts the app's Release itself (below, with notes
+          # lifted from the package's CHANGELOG) the action must not also do it
+          # — that step was silently dead, always finding the Release already
+          # there. Library-only repos have no such step, so they keep the
+          # action's release creation and its harmless double tag write; nothing
+          # in those repos triggers on a tag. Generalising the step below to
+          # every published package would let this be an unconditional false.
+          create-github-releases: ${{ inputs.app-release-package == '' }}
+          # Explicit because it is no longer implied once the above is false,
+          # and because a release that pushes no tag is a release nothing can
+          # deploy.
+          push-git-tags: true
           # v2 pushes via the GitHub API by default (signed commits/tags; the
           # old commitMode input was removed) and takes the token as an INPUT —
           # a GITHUB_TOKEN env var that differs from it is a hard error.

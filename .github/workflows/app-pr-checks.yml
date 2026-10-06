@@ -17,6 +17,24 @@
 # so repos no longer vendor scripts/check-ci-gates.sh — and a caller cannot
 # soften gates that live in this file at all.
 #
+# NO JOB HERE SKIPS ON `edited`, and that is deliberate. Test, Security and
+# Secret Scan used to carry `if: github.event.action != 'edited'` so that
+# editing a PR's title or body would not re-run the expensive work. Combined
+# with a caller whose concurrency group is head_ref-only and
+# cancel-in-progress, that was a silent-untested-merge bug: the edit cancelled
+# the in-flight code run, and the replacement run reported SKIPPED under the
+# same check names. A skipped required check satisfies branch protection, so
+# the PR went green having never run its tests. Agents push and then write the
+# PR body, which hits this window nearly every time.
+#
+# The cost saving was real, so the fix is not to pay it here — a caller that
+# never sends `edited` never triggers a redundant run. Callers should take
+# `types: [opened, synchronize, reopened]` with a `pr-code-` concurrency group
+# and validate the title in a separate pr-title.yml under its own group and
+# check name (see app-template). Until a caller does that, an edit costs one
+# honest re-run instead of a dishonest skip, which is the correct direction
+# for the failure to lean.
+#
 # Caller contract (permissions the caller job must grant):
 #   permissions:
 #     actions: read          # upload-sarif on private repos
@@ -105,7 +123,6 @@ jobs:
 
   test:
     name: Test & Quality
-    if: github.event.action != 'edited'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     env:
@@ -151,7 +168,6 @@ jobs:
 
   security:
     name: Security Scan
-    if: github.event.action != 'edited'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -200,7 +216,7 @@ jobs:
 
   secret-scan:
     name: Secret Scan (gitleaks)
-    if: github.head_ref != 'changeset-release/main' && github.event.action != 'edited'
+    if: github.head_ref != 'changeset-release/main'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -274,6 +290,51 @@ jobs:
             exit 1
           fi
           echo "CI gates intact."
+
+      # A caller that listens for `edited` and cancels on a head_ref-only
+      # concurrency group can merge untested: the edit cancels the in-flight
+      # code run and the replacement reports under the same check names.
+      # Checked here rather than trusted, because the symptom is a GREEN pull
+      # request and nothing else complains.
+      - name: PR-check caller does not listen for `edited`
+        run: |
+          set -euo pipefail
+          caller=.github/workflows/pr-checks.yml
+          [ -f "$caller" ] || { echo "No $caller — nothing to check."; exit 0; }
+
+          # Scoped to the pull_request trigger block, so a `types:` belonging
+          # to `issues:` or `pull_request_target:` cannot produce a false hit.
+          # Both list forms are collected — `types: [a, b]` and the block form
+          # with `- a` on following lines — because a guard a formatting choice
+          # can evade is worse than no guard: it reads as coverage.
+          types=$(awk '
+            /^on:/            { in_on = 1; next }
+            in_on && /^[^[:space:]]/ { in_on = 0 }
+            in_on && /^[[:space:]]*pull_request:/ { in_pr = 1; next }
+            in_pr && /^[[:space:]]{2}[a-z_]+:/    { in_pr = 0 }
+            in_pr && in_types && /^[[:space:]]*-[[:space:]]/ { print; next }
+            in_pr && in_types { in_types = 0 }
+            in_pr && /^[[:space:]]*types:/ { print; in_types = 1 }
+          ' "$caller")
+
+          case "$types" in
+            *edited*)
+              echo "::error file=$caller::pull_request types include 'edited'."
+              echo ""
+              echo "An edit to a PR's title or body then races the code run:"
+              echo "with cancel-in-progress on a head_ref-only concurrency"
+              echo "group, the edit cancels the real run and the replacement"
+              echo "reports under the same check names. The PR goes green."
+              echo ""
+              echo "Fix (see app-template):"
+              echo "  1. pr-checks.yml: types: [opened, synchronize, reopened]"
+              echo "  2. concurrency group: pr-code- plus the head ref"
+              echo "  3. move title validation to its own pr-title.yml, with"
+              echo "     its own concurrency group and check name."
+              exit 1
+              ;;
+          esac
+          echo "PR-check caller listens for code events only."
 
   # Scaffolded repos: a template token left in deploy.yml deploys green while
   # the secret behind it is silently missing (the reggiesbbq Sentry incident).

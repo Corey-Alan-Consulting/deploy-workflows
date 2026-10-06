@@ -138,9 +138,27 @@ jobs:
           ANTHROPIC_WORKSPACE_ID: wrkspc_01EUPu4heSAm6R2HCtMvFgUW
         run: |
           set -euo pipefail
+
+          # Fetch the OIDC JWT first and fail HERE if it is missing. Without
+          # this the empty value is posted as the assertion and the exchange
+          # rejects it as a generic 401 — indistinguishable from a federation
+          # rule that does not match. The usual cause is a caller that did not
+          # grant `id-token: write`.
           JWT=$(curl -sS -H "Authorization: Bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
-            "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=https://api.anthropic.com" | jq -r .value)
-          RESPONSE=$(jq -n \
+            "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=https://api.anthropic.com" | jq -r '.value // empty')
+          if [ -z "$JWT" ]; then
+            echo "::error::No GitHub OIDC token. Does the calling workflow grant 'id-token: write'?"
+            exit 1
+          fi
+
+          # Deliberately NOT `curl -f`: it exits non-zero AND discards the
+          # response, so neither the status code nor the body reaches the log.
+          # A rule that stopped matching then looks exactly like an outage —
+          # which cost a four-repo investigation on 2026-10-05, when a Static
+          # job_workflow_ref match broke against SHA-pinned callers and every
+          # caller reported only "token exchange failed".
+          BODY="$RUNNER_TEMP/anthropic-token.json"
+          HTTP=$(jq -n \
             --arg jwt "$JWT" \
             --arg rule "$ANTHROPIC_FEDERATION_RULE_ID" \
             --arg org "$ANTHROPIC_ORGANIZATION_ID" \
@@ -149,12 +167,27 @@ jobs:
             '{grant_type:"urn:ietf:params:oauth:grant-type:jwt-bearer", assertion:$jwt,
               federation_rule_id:$rule, organization_id:$org,
               service_account_id:$sa, workspace_id:$ws}' |
-            curl -sS -f https://api.anthropic.com/v1/oauth/token \
+            curl -sS -o "$BODY" -w '%{http_code}' https://api.anthropic.com/v1/oauth/token \
               -H 'content-type: application/json' --data @-) || {
-            echo "::error::Anthropic token exchange failed — check the WIF authentication history in the Claude Console."; exit 1; }
-          TOKEN=$(jq -r .access_token <<< "$RESPONSE")
-          if [ -z "$TOKEN" ] || [ "$TOKEN" = "null" ]; then
-            echo "::error::Anthropic token exchange returned no access_token."; exit 1
+            echo "::error::Could not reach https://api.anthropic.com/v1/oauth/token (network or DNS)."
+            rm -f "$BODY"; exit 1; }
+
+          if [ "$HTTP" != "200" ]; then
+            # A denied exchange is opaque by design — the body is a fixed
+            # "Authentication failed" whichever check failed — so the status
+            # code and the history link are what actually narrow it down. 401
+            # means the rule did not match; 4xx otherwise is usually a
+            # malformed request; 5xx is Anthropic-side.
+            echo "::error::Anthropic token exchange failed with HTTP $HTTP. Response: $(tr -d '\n' < "$BODY")"
+            echo "::error::Deny reason (per attempt): https://platform.claude.com/settings/workload-identity-federation?tab=history"
+            echo "::error::Rule $ANTHROPIC_FEDERATION_RULE_ID must match this job's job_workflow_ref, which is SHA-pinned by callers."
+            rm -f "$BODY"; exit 1
+          fi
+
+          TOKEN=$(jq -r '.access_token // empty' < "$BODY")
+          rm -f "$BODY"
+          if [ -z "$TOKEN" ]; then
+            echo "::error::Anthropic token exchange returned 200 with no access_token."; exit 1
           fi
           echo "::add-mask::$TOKEN"
           echo "token=$TOKEN" >> "$GITHUB_OUTPUT"

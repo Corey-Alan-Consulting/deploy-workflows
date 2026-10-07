@@ -793,6 +793,7 @@ jobs:
       id-token: write
     outputs:
       digest: ${{ steps.push.outputs.digest }}
+      image: ${{ env.MIGRATE_IMAGE }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -858,76 +859,90 @@ jobs:
         run: cosign sign --yes "${MIGRATE_IMAGE}@${DIGEST}"
 
   # ===========================================================================
-  # Trivy Image Scan
+  # Image Scan
   # ===========================================================================
-  trivy-image-scan:
-    name: Scan Image
-    runs-on: ubuntu-latest
-    needs: docker
-    if: always() && needs.docker.result == 'success' && inputs.enable_security_scan
-    timeout-minutes: 15
-    permissions:
-      actions: read
-      contents: read
-      id-token: write
-      security-events: write
-    steps:
-      - id: auth
-        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
-        with:
-          workload_identity_provider: ${{ env.WIF_PROVIDER }}
-          service_account: ${{ env.WIF_SA }}
-
-      - uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3.0.1
-
-      - run: gcloud auth configure-docker ${{ inputs.registry }}
-
-      # Post-push: gates the human-merged prod PR via a failed check. Fixable CRITICAL.
-      - name: Trivy image scan (gate on CRITICAL)
-        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
-        with:
-          image-ref: "${{ needs.docker.outputs.image }}@${{ needs.docker.outputs.digest }}"
-          format: table
-          severity: CRITICAL
-          ignore-unfixed: true
-          exit-code: "1"
-
-      - name: Trivy SARIF report
-        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
-        if: always()
-        with:
-          image-ref: "${{ needs.docker.outputs.image }}@${{ needs.docker.outputs.digest }}"
-          format: sarif
-          output: trivy-image-results.sarif
-          severity: CRITICAL,HIGH
-
-      - name: Upload SARIF results
-        uses: github/codeql-action/upload-sarif@2892aa5e19bbd11bc0cff5427e3b750a04d9e3c2 # v4.38.2
-        if: always() && hashFiles('trivy-image-results.sarif') != ''
-        with:
-          sarif_file: trivy-image-results.sarif
-          category: trivy-image
-
-  # ===========================================================================
-  # Trivy Migration Image Scan
-  # ===========================================================================
-  # The migration image was pushed and cosign-signed by the `migration` job and
-  # then never scanned — every other Trivy step in this file targets
-  # `needs.docker.outputs.*`, the app image. So the one container that runs
-  # `prisma migrate deploy` against production as the database owner reached
-  # prod ungated, and its CVEs only surfaced later from trivy-operator's 168h
-  # in-cluster cycle (platform-infra#3893 / #3784, deploy-workflows#82).
+  # Scope is DERIVED, not declared. Every image this workflow pushes is added to
+  # a matrix by the `scan-matrix` job below, so a new image inherits the gate
+  # automatically instead of waiting for someone to remember a second
+  # `image-ref:`.
   #
-  # Deliberately a separate job rather than extra steps on `trivy-image-scan`:
-  # it gets its own check name, so a red gate says *which* image is dirty, and
-  # a failing app-image gate can't short-circuit the migration scan before it
-  # ever runs.
-  trivy-migration-scan:
-    name: Scan Migration Image
+  # That failure mode is not hypothetical. Both the app and migration images
+  # used to be scanned by two hand-written jobs, and for months there was only
+  # one: the migration image was built, pushed and cosign-signed and nothing
+  # ever scanned it, so the container that runs `prisma migrate deploy` against
+  # production as the database owner reached prod ungated and its CVEs surfaced
+  # only from trivy-operator's 168h in-cluster cycle (platform-infra#3893,
+  # #3784; deploy-workflows#82, #83).
+  #
+  # build-push-generic.yml deliberately keeps its single inline scan: with one
+  # image there is no list to drift out of sync.
+  scan-matrix:
+    name: Collect scan targets
     runs-on: ubuntu-latest
-    needs: migration
-    if: always() && needs.migration.result == 'success' && inputs.enable_security_scan
+    needs: [docker, migration]
+    if: always() && needs.docker.result == 'success' && inputs.enable_security_scan
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      targets: ${{ steps.collect.outputs.targets }}
+    steps:
+      - name: Collect pushed images
+        id: collect
+        env:
+          APP_IMAGE: ${{ needs.docker.outputs.image }}
+          APP_DIGEST: ${{ needs.docker.outputs.digest }}
+          MIGRATION_RESULT: ${{ needs.migration.result }}
+          MIGRATION_IMAGE: ${{ needs.migration.outputs.image }}
+          MIGRATION_DIGEST: ${{ needs.migration.outputs.digest }}
+        run: |
+          set -euo pipefail
+          targets='[]'
+          add() {
+            targets=$(jq -c --arg n "$1" --arg r "$2" '. + [{name: $n, ref: $r}]' <<<"$targets")
+          }
+
+          if [ -n "$APP_IMAGE" ] && [ -n "$APP_DIGEST" ]; then
+            add app "${APP_IMAGE}@${APP_DIGEST}"
+          else
+            echo "::error::docker job succeeded but exported no image/digest"
+            exit 1
+          fi
+
+          # The migration job is skipped whenever build_migration_image is false,
+          # which is a legitimate shape (an app with no database). Only a job that
+          # ran and then failed to export a digest is an error worth failing on.
+          if [ "$MIGRATION_RESULT" = "success" ]; then
+            if [ -n "$MIGRATION_IMAGE" ] && [ -n "$MIGRATION_DIGEST" ]; then
+              add migration "${MIGRATION_IMAGE}@${MIGRATION_DIGEST}"
+            else
+              echo "::error::migration job succeeded but exported no image/digest"
+              exit 1
+            fi
+          else
+            echo "migration job result=${MIGRATION_RESULT} — no migration image to scan"
+          fi
+
+          echo "targets=${targets}" >> "$GITHUB_OUTPUT"
+
+          echo "Scan targets:"
+          jq -r '.[] | "  \(.name): \(.ref)"' <<<"$targets"
+
+  image-scan:
+    name: Scan ${{ matrix.target.name }} image
+    runs-on: ubuntu-latest
+    needs: scan-matrix
+    # An empty matrix vector is a hard Actions error rather than a skip, so guard
+    # the job on there being at least one target.
+    if: needs.scan-matrix.outputs.targets != '[]'
     timeout-minutes: 15
+    strategy:
+      # Every target reports independently: a dirty app image must not cancel
+      # the migration scan before it runs, which is what sequential steps in a
+      # single job would have done.
+      fail-fast: false
+      matrix:
+        target: ${{ fromJSON(needs.scan-matrix.outputs.targets) }}
     permissions:
       actions: read
       contents: read
@@ -942,18 +957,18 @@ jobs:
 
       - uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3.0.1
 
-      # Registry via env rather than inline `${{ }}` — the two older copies of
-      # this step are part of the repo's acknowledged zizmor template-injection
-      # backlog, and there's no reason for a new job to add to it.
+      # Registry via env rather than inline `${{ }}` — the other copies of this
+      # step are part of the repo's acknowledged zizmor template-injection
+      # backlog and there is no reason to add to it.
       - env:
           REGISTRY: ${{ inputs.registry }}
         run: gcloud auth configure-docker "$REGISTRY"
 
       # Post-push: gates the human-merged prod PR via a failed check. Fixable CRITICAL.
-      - name: Trivy migration image scan (gate on CRITICAL)
+      - name: Trivy image scan (gate on CRITICAL)
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
-          image-ref: "${{ env.MIGRATE_IMAGE }}@${{ needs.migration.outputs.digest }}"
+          image-ref: ${{ matrix.target.ref }}
           format: table
           severity: CRITICAL
           ignore-unfixed: true
@@ -963,19 +978,19 @@ jobs:
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         if: always()
         with:
-          image-ref: "${{ env.MIGRATE_IMAGE }}@${{ needs.migration.outputs.digest }}"
+          image-ref: ${{ matrix.target.ref }}
           format: sarif
-          output: trivy-migration-results.sarif
+          output: trivy-image-results.sarif
           severity: CRITICAL,HIGH
 
-      # Distinct category — sharing `trivy-image` would make each upload
-      # overwrite the other's findings in the Security tab.
+      # Category must be unique per target or each upload overwrites the other's
+      # findings in the Security tab.
       - name: Upload SARIF results
         uses: github/codeql-action/upload-sarif@2892aa5e19bbd11bc0cff5427e3b750a04d9e3c2 # v4.38.2
-        if: always() && hashFiles('trivy-migration-results.sarif') != ''
+        if: always() && hashFiles('trivy-image-results.sarif') != ''
         with:
-          sarif_file: trivy-migration-results.sarif
-          category: trivy-migration-image
+          sarif_file: trivy-image-results.sarif
+          category: trivy-image-${{ matrix.target.name }}
 
   # ===========================================================================
   # Cleanup Old Images

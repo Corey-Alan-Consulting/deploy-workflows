@@ -214,6 +214,67 @@ jobs:
           exit-code: '1'
           skip-dirs: ${{ inputs.trivy-skip-dirs }}
 
+      # OS packages are the one class no pre-release check here can see. The
+      # gate above is `scan-type: fs` and reads the repo; `perl-base` lives in
+      # the Docker base layer, so a filesystem scan of a clean repo reports
+      # nothing. The first thing that notices is the image gate in the deploy
+      # pipeline, which runs AFTER the release is cut.
+      #
+      # capturly v2.13.0: released, then its image scan failed on three fixable
+      # CRITICALs in perl-base (CVE-2026-13221, CVE-2026-42496, CVE-2026-8376),
+      # every one of them inherited from node:26-bookworm-slim.
+      #
+      # This is a LINT, not a scan, and that is deliberate. Scanning the base
+      # image here would gate on someone else's publish schedule: the base keeps
+      # its CVEs until upstream rebuilds, so the check would sit red with
+      # nothing the author can action, and would still be red after a correct
+      # fix. What IS actionable is the Dockerfile: an image that installs
+      # packages but never upgrades the ones it inherited can never pick up a
+      # Debian/Alpine security fix, however often it is rebuilt. That is the
+      # defect, it is local, and it stays fixed.
+      #
+      # Final stage only — builder stages are not shipped. Stages that run no
+      # package manager are skipped rather than failed, so distroless and
+      # pure-COPY images (which have no shell to upgrade with) stay valid.
+      - name: Base-layer update lint
+        run: |
+          set -euo pipefail
+
+          failed=0
+          checked=0
+
+          while IFS= read -r df; do
+            # Final stage = everything from the last FROM to EOF.
+            body="$(awk 'tolower($1)=="from"{n=NR} {l[NR]=$0} END{for(i=n;i<=NR;i++) print l[i]}' "$df")"
+            rel="${df#./}"
+
+            if grep -qE '(apt-get|apt)[[:space:]]+(-[^[:space:]]+[[:space:]]+)*install' <<<"$body"; then
+              checked=$((checked + 1))
+              if grep -qE '(apt-get|apt)[[:space:]]+(-[^[:space:]]+[[:space:]]+)*(upgrade|dist-upgrade)' <<<"$body"; then
+                echo "  ok   $rel (apt: install + upgrade)"
+              else
+                echo "::error file=$rel::Final stage runs 'apt-get install' but never 'apt-get upgrade', so base-layer CVEs can never be fixed by a rebuild. Add 'apt-get upgrade -y' to the same RUN."
+                failed=1
+              fi
+            elif grep -qE 'apk[[:space:]]+(-[^[:space:]]+[[:space:]]+)*add' <<<"$body"; then
+              checked=$((checked + 1))
+              if grep -qE 'apk[[:space:]]+(-[^[:space:]]+[[:space:]]+)*upgrade' <<<"$body"; then
+                echo "  ok   $rel (apk: add + upgrade)"
+              else
+                echo "::error file=$rel::Final stage runs 'apk add' but never 'apk upgrade', so base-layer CVEs can never be fixed by a rebuild. Add 'apk upgrade --no-cache' to the same RUN."
+                failed=1
+              fi
+            else
+              echo "  skip $rel (final stage runs no package manager)"
+            fi
+          done < <(
+            find . -type f \( -name 'Dockerfile' -o -name 'Dockerfile.*' \) \
+              -not -path './.*/*' -not -path './node_modules/*' | sort
+          )
+
+          echo "Checked $checked Dockerfile(s) that install OS packages."
+          exit "$failed"
+
   secret-scan:
     name: Secret Scan (gitleaks)
     if: github.head_ref != 'changeset-release/main'

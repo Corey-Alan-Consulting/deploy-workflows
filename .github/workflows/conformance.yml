@@ -80,3 +80,80 @@ jobs:
             exit 1
           fi
           echo "CI gates intact."
+
+      # One Node version per app: tests, build, and the shipped image.
+      #
+      # app-pr-checks defaults to Node 22 and build-push-nextjs to Node 20 —
+      # not a decision, just age (the build workflow is from 2026-03 when 20
+      # was LTS, the PR gate from 2026-09 when 22 was). A repo that pins
+      # neither therefore tests on one Node and builds on another, and the
+      # image it ships is a third. app-template did exactly that and the split
+      # cost ten weeks of red releases: a test calling `fs.globSync` (Node 22+)
+      # passed PR checks on 22 and failed the release on 20 as
+      # `TypeError: globSync is not a function` — so the assertion was dead on
+      # the build Node AND it took the whole workflow down.
+      #
+      # This requires an EXPLICIT pin in both callers rather than comparing
+      # against the defaults, because a check that encodes the defaults rots
+      # the moment one of them moves. Three repos were already pinning by hand
+      # (coreyalan.com, jlshaw.link, showcase), which is the signal this was
+      # known and unenforced.
+      - name: One Node version per app
+        run: |
+          set -euo pipefail
+
+          wf_calling() { grep -rlE "workflows/$1\.yml@" .github/workflows 2>/dev/null | head -1; }
+          pinned_in() { [ -n "$1" ] && grep -hoE "$2: *'?\"?[0-9]+" "$1" 2>/dev/null | head -1 | grep -oE '[0-9]+'; }
+
+          pr_wf="$(wf_calling app-pr-checks || true)"
+          dep_wf="$(wf_calling build-push-nextjs || true)"
+
+          if [ -z "$pr_wf" ] && [ -z "$dep_wf" ]; then
+            echo "Neither app-pr-checks nor build-push-nextjs is called here — nothing to align."
+            exit 0
+          fi
+
+          test_node="$(pinned_in "$pr_wf" 'node-version' || true)"
+          build_node="$(pinned_in "$dep_wf" 'node_version' || true)"
+
+          # The shipped image: deploy.yml's `dockerfile:` input, else the
+          # build-push-nextjs default of Dockerfile.prebuilt.
+          # `|| true` on both: a repo that passes no `dockerfile:` input (several
+          # rely on the default) makes grep exit 1, and pipefail + set -e would
+          # kill this step with no output at all — failing the repo for a reason
+          # nobody can read.
+          df="$(grep -hoE '^\s+dockerfile: *\S+' "$dep_wf" 2>/dev/null | head -1 | sed 's/.*dockerfile: *//' || true)"
+          [ -n "$df" ] || df="Dockerfile.prebuilt"
+          image_node=""
+          if [ -f "$df" ]; then
+            image_node="$(awk 'tolower($1)=="from"{l=$2} END{print l}' "$df" | sed -nE 's/^node:([0-9]+).*/\1/p' || true)"
+          fi
+
+          echo "  test  (${pr_wf:-none}): ${test_node:-UNPINNED}"
+          echo "  build (${dep_wf:-none}): ${build_node:-UNPINNED}"
+          echo "  image ($df): ${image_node:-n/a}"
+
+          status=0
+          if [ -n "$pr_wf" ] && [ -z "$test_node" ]; then
+            echo "::error file=$pr_wf::node-version is not pinned, so this repo tests on app-pr-checks' default. Pin it to the Node its image ships."
+            status=1
+          fi
+          if [ -n "$dep_wf" ] && [ -z "$build_node" ]; then
+            echo "::error file=$dep_wf::node_version is not pinned, so this repo builds on build-push-nextjs' default. Pin it to the Node its image ships."
+            status=1
+          fi
+          for pair in "test:$test_node" "build:$build_node"; do
+            label="${pair%%:*}"; val="${pair#*:}"
+            if [ -n "$val" ] && [ -n "$image_node" ] && [ "$val" != "$image_node" ]; then
+              echo "::error::$label Node is $val but $df ships node:$image_node. The prebuilt flow copies build output into that image, so these must match."
+              status=1
+            fi
+          done
+
+          if [ "$status" -ne 0 ]; then
+            echo ""
+            echo "Pin one Node major in pr-checks.yml, deploy.yml and the Dockerfile."
+            echo "See framework standards/docker.md and standards/ci-cd.md."
+            exit 1
+          fi
+          echo "Node version is consistent across tests, build and image."

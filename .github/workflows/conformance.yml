@@ -99,61 +99,79 @@ jobs:
       # (coreyalan.com, jlshaw.link, showcase), which is the signal this was
       # known and unenforced.
       - name: One Node version per app
+        shell: python3 {0}
         run: |
-          set -euo pipefail
+          """Assert one Node major across the PR gate, the build, and the image.
 
-          wf_calling() { grep -rlE "workflows/$1\.yml@" .github/workflows 2>/dev/null | head -1; }
-          pinned_in() { [ -n "$1" ] && grep -hoE "$2: *'?\"?[0-9]+" "$1" 2>/dev/null | head -1 | grep -oE '[0-9]+'; }
+          Parses the YAML rather than grepping: the input must come from the
+          calling job's own `with:` block. A file-wide grep for `node-version`
+          happily matches an unrelated `actions/setup-node` step in a different
+          job, which is exactly the false positive that made this check report
+          two repos as pinned when they were not.
+          """
+          import glob, os, re, sys, yaml
 
-          pr_wf="$(wf_calling app-pr-checks || true)"
-          dep_wf="$(wf_calling build-push-nextjs || true)"
+          def caller(workflow_name):
+              """(file, with-block) of the job calling `workflow_name`."""
+              for path in sorted(glob.glob(".github/workflows/*.y*ml")):
+                  try:
+                      doc = yaml.safe_load(open(path)) or {}
+                  except yaml.YAMLError:
+                      continue
+                  for job in (doc.get("jobs") or {}).values():
+                      if not isinstance(job, dict):
+                          continue
+                      if f"workflows/{workflow_name}.yml@" in str(job.get("uses", "")):
+                          return path, (job.get("with") or {})
+              return None, None
 
-          if [ -z "$pr_wf" ] && [ -z "$dep_wf" ]; then
-            echo "Neither app-pr-checks nor build-push-nextjs is called here — nothing to align."
-            exit 0
-          fi
+          pr_wf, pr_with = caller("app-pr-checks")
+          dep_wf, dep_with = caller("build-push-nextjs")
 
-          test_node="$(pinned_in "$pr_wf" 'node-version' || true)"
-          build_node="$(pinned_in "$dep_wf" 'node_version' || true)"
+          if not pr_wf and not dep_wf:
+              print("Neither app-pr-checks nor build-push-nextjs is called here.")
+              sys.exit(0)
 
-          # The shipped image: deploy.yml's `dockerfile:` input, else the
-          # build-push-nextjs default of Dockerfile.prebuilt.
-          # `|| true` on both: a repo that passes no `dockerfile:` input (several
-          # rely on the default) makes grep exit 1, and pipefail + set -e would
-          # kill this step with no output at all — failing the repo for a reason
-          # nobody can read.
-          df="$(grep -hoE '^\s+dockerfile: *\S+' "$dep_wf" 2>/dev/null | head -1 | sed 's/.*dockerfile: *//' || true)"
-          [ -n "$df" ] || df="Dockerfile.prebuilt"
-          image_node=""
-          if [ -f "$df" ]; then
-            image_node="$(awk 'tolower($1)=="from"{l=$2} END{print l}' "$df" | sed -nE 's/^node:([0-9]+).*/\1/p' || true)"
-          fi
+          def major(v):
+              m = re.match(r"^v?(\d+)", str(v or "").strip())
+              return m.group(1) if m else None
 
-          echo "  test  (${pr_wf:-none}): ${test_node:-UNPINNED}"
-          echo "  build (${dep_wf:-none}): ${build_node:-UNPINNED}"
-          echo "  image ($df): ${image_node:-n/a}"
+          test_node = major((pr_with or {}).get("node-version"))
+          build_node = major((dep_with or {}).get("node_version"))
 
-          status=0
-          if [ -n "$pr_wf" ] && [ -z "$test_node" ]; then
-            echo "::error file=$pr_wf::node-version is not pinned, so this repo tests on app-pr-checks' default. Pin it to the Node its image ships."
-            status=1
-          fi
-          if [ -n "$dep_wf" ] && [ -z "$build_node" ]; then
-            echo "::error file=$dep_wf::node_version is not pinned, so this repo builds on build-push-nextjs' default. Pin it to the Node its image ships."
-            status=1
-          fi
-          for pair in "test:$test_node" "build:$build_node"; do
-            label="${pair%%:*}"; val="${pair#*:}"
-            if [ -n "$val" ] && [ -n "$image_node" ] && [ "$val" != "$image_node" ]; then
-              echo "::error::$label Node is $val but $df ships node:$image_node. The prebuilt flow copies build output into that image, so these must match."
-              status=1
-            fi
-          done
+          # The shipped image: deploy.yml's `dockerfile:` input, else
+          # build-push-nextjs' own default.
+          dockerfile = (dep_with or {}).get("dockerfile") or "Dockerfile.prebuilt"
+          image_node = None
+          if os.path.isfile(dockerfile):
+              last = ""
+              for line in open(dockerfile):
+                  if line.strip().lower().startswith("from "):
+                      last = line.split()[1]
+              m = re.match(r"^node:(\d+)", last)
+              image_node = m.group(1) if m else None
 
-          if [ "$status" -ne 0 ]; then
-            echo ""
-            echo "Pin one Node major in pr-checks.yml, deploy.yml and the Dockerfile."
-            echo "See framework standards/docker.md and standards/ci-cd.md."
-            exit 1
-          fi
-          echo "Node version is consistent across tests, build and image."
+          print(f"  test  ({pr_wf or 'not called'}): {test_node or 'UNPINNED'}")
+          print(f"  build ({dep_wf or 'not called'}): {build_node or 'UNPINNED'}")
+          print(f"  image ({dockerfile}): {image_node or 'n/a'}")
+
+          bad = False
+          if pr_wf and not test_node:
+              print(f"::error file={pr_wf}::node-version is not pinned on the app-pr-checks "
+                    "call, so this repo tests on its default. Pin it to the Node the image ships.")
+              bad = True
+          if dep_wf and not build_node:
+              print(f"::error file={dep_wf}::node_version is not pinned on the build-push-nextjs "
+                    "call, so this repo builds on its default. Pin it to the Node the image ships.")
+              bad = True
+          for label, val in (("test", test_node), ("build", build_node)):
+              if val and image_node and val != image_node:
+                  print(f"::error::{label} Node is {val} but {dockerfile} ships node:{image_node}. "
+                        "The prebuilt flow copies build output into that image, so these must match.")
+                  bad = True
+
+          if bad:
+              print("\nPin one Node major on both calls and in the Dockerfile.")
+              print("See framework standards/docker.md and standards/ci-cd.md.")
+              sys.exit(1)
+          print("Node version is consistent across tests, build and image.")

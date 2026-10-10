@@ -81,6 +81,141 @@ jobs:
           fi
           echo "CI gates intact."
 
+      # An undefined input, an undeclared secret, or a missing required input
+      # makes a reusable-workflow call fail the ENTIRE run at startup: no jobs,
+      # no logs, no annotation, just `startup_failure`. It is the least
+      # debuggable failure Actions produces, and it is pure caller error.
+      #
+      # dispatchr-social@0.4.10 shipped and never deployed because its worker
+      # job passed `node_version` to build-push-generic.yml, which has no such
+      # input -- of the seventeen workflows here, only build-push-nextjs.yml
+      # declares one. Nothing caught it: actionlint does not resolve a remote
+      # workflow's input list, and the release itself was green.
+      #
+      # Resolves against the ref each job actually pins, not main, because
+      # callers sit on different versions.
+      - name: Reusable-workflow inputs are declared
+        shell: python3 {0}
+        run: |
+          """Assert every input and secret a caller passes is declared by the workflow it calls.
+
+          A reusable workflow rejects an undefined input by failing the ENTIRE run at
+          startup: no jobs, no logs, no annotation, just `startup_failure`. The same
+          happens for an undeclared secret and for a missing required input. That is the
+          least debuggable failure GitHub Actions produces, and it is pure caller error,
+          so it belongs in a lint rather than in a release.
+
+          Resolution is against the EXACT ref each job pins, not against main: callers
+          sit on different versions, and checking main would both miss real breaks and
+          invent false ones.
+          """
+          import glob, os, re, sys, urllib.error, urllib.request, yaml
+
+          # Assembled rather than written out: an expression opener appearing literally
+          # in a `run:` block is lexed as a GitHub expression by actionlint, which then
+          # fails the workflow lint on this very file. Hence the concatenation below.
+          EXPR = "$" + "{" + "{"
+
+          ORG_WF = re.compile(
+              r"^Corey-Alan-Consulting/deploy-workflows/\.github/workflows/([^@]+)@(.+)$"
+          )
+          RAW = "https://raw.githubusercontent.com/Corey-Alan-Consulting/deploy-workflows/{ref}/.github/workflows/{wf}"
+          _cache = {}
+
+
+          def declared(wf, ref):
+              """(inputs, secrets) declared by `wf` at `ref`; None if unfetchable."""
+              key = (wf, ref)
+              if key in _cache:
+                  return _cache[key]
+              req = urllib.request.Request(
+                  RAW.format(ref=ref, wf=wf), headers={"User-Agent": "conformance-input-lint"}
+              )
+              try:
+                  with urllib.request.urlopen(req, timeout=20) as r:
+                      doc = yaml.safe_load(r.read()) or {}
+              except (urllib.error.URLError, yaml.YAMLError) as e:
+                  _cache[key] = None
+                  print(f"    (could not fetch {wf}@{ref}: {e})")
+                  return None
+              # `on:` parses to the boolean True under YAML 1.1
+              trig = doc.get("on") or doc.get(True) or {}
+              call = (trig or {}).get("workflow_call") or {}
+              out = ((call.get("inputs") or {}), (call.get("secrets") or {}))
+              _cache[key] = out
+              return out
+
+
+          bad = False
+          checked = 0
+
+          for path in sorted(glob.glob(".github/workflows/*.y*ml")):
+              try:
+                  doc = yaml.safe_load(open(path)) or {}
+              except yaml.YAMLError:
+                  continue
+              for job_name, job in (doc.get("jobs") or {}).items():
+                  if not isinstance(job, dict):
+                      continue
+                  m = ORG_WF.match(str(job.get("uses", "")).strip())
+                  if not m:
+                      continue
+                  wf, ref = m.group(1), m.group(2).split()[0]
+                  if EXPR in ref:
+                      print(f"  {path} :: {job_name} -> {wf}@<expression>, cannot resolve, skipped")
+                      continue
+
+                  spec = declared(wf, ref)
+                  if spec is None:
+                      print(f"::error file={path}::{job_name} calls {wf}@{ref}, which could not be "
+                            "read. If the ref does not exist the run will fail at startup.")
+                      bad = True
+                      continue
+                  inputs, secrets = spec
+                  checked += 1
+                  job_bad = False
+
+                  passed_in = list((job.get("with") or {}).keys())
+                  for k in passed_in:
+                      if k not in inputs:
+                          near = ", ".join(sorted(n for n in inputs if n.replace("-", "_") == k.replace("-", "_")))
+                          hint = f" Did you mean: {near}?" if near else ""
+                          print(f"::error file={path}::{job_name} passes `{k}` to {wf}, which declares "
+                                f"no such input. The whole run will fail at startup with no logs.{hint}")
+                          bad = job_bad = True
+
+                  for k, meta in inputs.items():
+                      if isinstance(meta, dict) and meta.get("required") and k not in passed_in:
+                          print(f"::error file={path}::{job_name} does not pass required input `{k}` "
+                                f"to {wf}. The run will fail at startup.")
+                          bad = job_bad = True
+
+                  sec_block = job.get("secrets")
+                  if sec_block == "inherit" or sec_block is None:
+                      pass
+                  elif isinstance(sec_block, dict):
+                      for k in sec_block:
+                          if k not in secrets:
+                              print(f"::error file={path}::{job_name} passes secret `{k}` to {wf}, "
+                                    "which declares no such secret. The run will fail at startup.")
+                              bad = job_bad = True
+                      for k, meta in secrets.items():
+                          if isinstance(meta, dict) and meta.get("required") and k not in sec_block:
+                              print(f"::error file={path}::{job_name} does not pass required secret "
+                                    f"`{k}` to {wf}. The run will fail at startup.")
+                              bad = job_bad = True
+
+                  if not job_bad:
+                      print(f"  ok  {path} :: {job_name} -> {wf}@{ref[:12]} "
+                            f"({len(passed_in)} inputs checked against {len(inputs)} declared)")
+
+          if checked == 0:
+              print("No deploy-workflows callers found.")
+          if bad:
+              print("\nEvery key in `with:` and `secrets:` must be declared by the workflow in `uses:`.")
+              sys.exit(1)
+          print(f"\n{checked} reusable-workflow call(s) validated.")
+
       # One Node version per app: tests, build, and the shipped image.
       #
       # app-pr-checks defaults to Node 22 and build-push-nextjs to Node 20 —

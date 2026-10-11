@@ -2,9 +2,9 @@
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
   "description": [
     "Shared Renovate policy for Helm charts declared as ArgoCD Application targetRevisions. Reference with: { \"extends\": [\"github>Corey-Alan-Consulting/deploy-workflows:argocd-charts\"] }",
-    "Intended for the two infra repos that own argocd/applications/ — platform-infra (prod GKE) and homelab-infra (staging k3s). It is a SEPARATE preset from renovate-config because the argocd manager only makes sense where those files exist; the app repos extend renovate-config and should not inherit this.",
-    "WHY IT EXISTS. Renovate's `argocd` manager ships NO default file patterns and is inert until a repo names them, because ArgoCD Application filenames are not standardised. homelab-infra configured it. platform-infra never did, so prod was never offered a chart bump at all. Measured 2026-10-11: all 8 charts deployed on both clusters were misaligned, homelab ahead on every one, and 6 prod charts a full major behind. The policy lived in two places and only one copy was right — which is the argument for it living here instead.",
-    "IT DOES NOT PIN THE CLUSTERS TOGETHER. Staging leading prod is the point: it is what makes homelab's versions evidence rather than guesses. Residual divergence — both repos get a PR and they merge at different times — is reported by platform-infra's scripts/check-chart-drift.py, which tolerates staging leading and flags only prod a major behind, or prod ahead of staging."
+    "Intended for the two infra repos that own argocd/applications/ \u2014 platform-infra (prod GKE) and homelab-infra (staging k3s). It is a SEPARATE preset from renovate-config because the argocd manager only makes sense where those files exist; the app repos extend renovate-config and should not inherit this.",
+    "WHY IT EXISTS. Renovate's `argocd` manager ships NO default file patterns and is inert until a repo names them, because ArgoCD Application filenames are not standardised. homelab-infra configured it. platform-infra never did, so prod was never offered a chart bump at all. Measured 2026-10-11: all 8 charts deployed on both clusters were misaligned, homelab ahead on every one, and 6 prod charts a full major behind. The policy lived in two places and only one copy was right \u2014 which is the argument for it living here instead.",
+    "IT DOES NOT PIN THE CLUSTERS TOGETHER. Staging leading prod is the point: it is what makes homelab's versions evidence rather than guesses. Residual divergence \u2014 both repos get a PR and they merge at different times \u2014 is reported by platform-infra's scripts/check-chart-drift.py, which tolerates staging leading and flags only prod a major behind, or prod ahead of staging."
   ],
   "argocd": {
     "managerFilePatterns": [
@@ -13,7 +13,7 @@
   },
   "packageRules": [
     {
-      "description": "Helm majors and minors go to the dependency dashboard rather than opening an unattended PR. Both clusters run charts that own CRDs — cert-manager, external-secrets, redis-operator, tetragon — where an unreviewed minor is the hard kind to reverse. Patches still flow normally. This also keeps majors from silently consuming prConcurrentLimit: platform-infra accumulated 11 open Renovate PRs, the oldest from 2026-06-17, which saturated the default limit of 10 and stopped EVERY new PR from opening for two months. Majors that need a policy decision belong on the dashboard, not rotting in the PR queue.",
+      "description": "Helm majors and minors go to the dependency dashboard rather than opening an unattended PR. Both clusters run charts that own CRDs \u2014 cert-manager, external-secrets, redis-operator, tetragon \u2014 where an unreviewed minor is the hard kind to reverse. Patches still flow normally. This also keeps majors from silently consuming prConcurrentLimit: platform-infra accumulated 11 open Renovate PRs, the oldest from 2026-06-17, which saturated the default limit of 10 and stopped EVERY new PR from opening for two months. Majors that need a policy decision belong on the dashboard, not rotting in the PR queue.",
       "matchDatasources": [
         "helm"
       ],
@@ -24,19 +24,23 @@
       "dependencyDashboardApproval": true
     },
     {
-      "description": "The charts deployed on BOTH clusters, grouped so each repo is offered them as one reviewable change instead of eight independent ones arriving at different times. Grouping does not force identical versions; it only stops the two sides being offered different ones. Keep this list in step with platform-infra's scripts/check-chart-drift.py, which reports on exactly this set.",
+      "description": "The charts deployed on BOTH clusters, grouped so each repo is offered them as one reviewable change instead of twelve independent ones arriving at different times. Grouping does not force identical versions; it only stops the two sides being offered different ones. The first cut of this list held 8 names because it was built from ArgoCD targetRevisions alone \u2014 a chart version also lives in helm-charts/*/Chart.yaml as a vendored dependency, and the two repos disagree about which form they use per chart (prod vendors kyverno, policy-reporter and trivy-operator; homelab declares those as targetRevisions; both vendor argo-cd). Keep in step with platform-infra's scripts/check-chart-drift.py, which reads both sources and compares exactly this set.",
       "matchDatasources": [
         "helm"
       ],
       "matchPackageNames": [
+        "argo-cd",
         "cert-manager",
         "external-secrets",
+        "kyverno",
+        "policy-reporter",
         "port-k8s-exporter",
         "port-ocean",
         "redis-operator",
         "reloader",
         "tetragon",
-        "traefik"
+        "traefik",
+        "trivy-operator"
       ],
       "groupName": "cross-cluster platform charts"
     }

@@ -73,6 +73,23 @@ on:
         required: false
         type: string
         default: 'pnpm type-check'
+      build-command:
+        description: >-
+          Production build, run on every PR. Empty string skips it for a repo
+          that genuinely cannot build in CI. Added 2026-10-12: nothing in this
+          gate compiled the app. Lint and type-check catch type errors, but
+          neither touches the bundler or the CSS pipeline, so a dependency bump
+          that breaks `next build` — a postcss/cssnano peer mismatch is the
+          canonical case — passed every check and failed only at deploy. That
+          gap is why a 223-alert Dependabot backlog accumulated fleet-wide: a
+          dependency PR could not be merged with confidence, because green meant
+          "types still check", not "the app still builds". Runs after Pre-test
+          setup so a generated Prisma client is present. Build-time NEXT_PUBLIC_*
+          values are absent, which Next tolerates (they inline as undefined);
+          this proves compilation and bundling, not a deployable artifact.
+        required: false
+        type: string
+        default: 'pnpm build'
       test-command:
         required: false
         type: string
@@ -161,6 +178,14 @@ jobs:
         env:
           TYPE_CHECK: ${{ inputs.type-check-command }}
         run: eval "$TYPE_CHECK"
+      # Before Test, not after: a compile failure should surface in seconds
+      # rather than behind a test suite, and no suite here depends on build
+      # output. Skipped only when a caller explicitly empties the input.
+      - name: Build
+        if: inputs.build-command != ''
+        env:
+          BUILD: ${{ inputs.build-command }}
+        run: eval "$BUILD"
       - name: Test
         env:
           TEST: ${{ inputs.test-command }}

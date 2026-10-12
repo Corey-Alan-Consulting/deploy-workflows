@@ -141,7 +141,21 @@ jobs:
   test:
     name: Test & Quality
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    # 30, not 15. The Build step added in v1.12.0 made 15 too tight: the job
+    # now installs, generates, lints, type-checks, BUILDS and tests in one
+    # slot, and coreyalan.com — the largest app — hit exactly 15 minutes and
+    # had Test cancelled out from under a successful Build, twice.
+    #
+    # Measured across the fleet with the build in place: blue-sky 2 min,
+    # reggiesbbq 4, gatherbee 5, jlshaw 9, dispatchr 9, coreyalan >15. So 15
+    # was not merely tight for one repo, it left the two 9-minute repos six
+    # minutes from the same cliff.
+    #
+    # This failure mode is the dangerous kind: a timeout cancels the job rather
+    # than failing it, and CANCELLED is not FAILURE — `gh pr checks` reports no
+    # failures and the PR can read green while its tests never ran. Raising the
+    # ceiling is free; a timeout costs nothing until it is used.
+    timeout-minutes: 30
     env:
       # Large Next.js apps outgrow Node's default heap during tsc/next builds
       # (coreyalan tsc OOM'd at the default; capturly documents the same).

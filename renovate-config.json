@@ -84,6 +84,14 @@
         "@auth/**"
       ],
       "groupName": "auth.js"
+    },
+    {
+      "description": "Stripe never rides in the automerge group. Each stripe SDK release pins ONE exact API-version literal in its types, so even a patch-level bump inside an existing caret range forces the consuming code to adopt a new Stripe API version \u2014 and a Stripe API version change alters response shapes and webhook payloads. Observed 2026-10-12: stripe 20.1.2 -> 20.4.1, a lockfile-only minor, changed the required literal from '2025-12-15.clover' to '2026-02-25.clover' and failed coreyalan.com's build inside the 75-package non-major group. Routing it to its own ungrouped, non-automerged PR means the API-version migration is a decision someone makes rather than a side effect of dependency hygiene. Only coreyalan.com pins the literal today; the rule is here rather than in that repo because the coupling is a property of the SDK, so it will bite the next repo that pins one.",
+      "matchPackageNames": [
+        "stripe"
+      ],
+      "groupName": null,
+      "automerge": false
     }
   ],
   "schedule": [

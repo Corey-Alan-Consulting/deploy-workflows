@@ -19,14 +19,18 @@
     {
       "customType": "regex",
       "description": "BuildKit pin in setup-buildx-action driver-opts. Nothing else watches this: `driver-opts: image=moby/buildkit:<tag>` is not a dependency file, not an action ref and not a Dockerfile FROM, so every built-in manager skips it and the pin ages silently. #6's pin went three releases stale exactly this way, and #73's first cut was stale within twenty minutes of being written. Deliberately requires a numeric tag so the floating `buildx-stable-1` this pin exists to replace is never matched.",
-      "fileMatch": ["^\\.github/workflows/[^/]+\\.ya?ml$"],
-      "matchStrings": ["driver-opts:\\s*image=(?<depName>moby/buildkit):(?<currentValue>v?[0-9][^\\s\"']*)"],
+      "fileMatch": [
+        "^\\.github/workflows/[^/]+\\.ya?ml$"
+      ],
+      "matchStrings": [
+        "driver-opts:\\s*image=(?<depName>moby/buildkit):(?<currentValue>v?[0-9][^\\s\"']*)"
+      ],
       "datasourceTemplate": "docker"
     }
   ],
   "packageRules": [
     {
-      "description": "Hand-curated security pins, not ordinary dependencies. In `overrides`, the KEY encodes the vulnerable range and the value is the patched floor, so Renovate reads the value as a plain range and offers the latest major — which forces that major on every transitive consumer matched by the key. On blue-skysolutions.com that turned `js-yaml@>=3.0.0 <3.15.0` into ^4.3.1, forcing @istanbuljs/load-nyc-config across the safeLoad API removal. Advisory bumps here have to be made by hand, against the advisory's own fix floor.",
+      "description": "Hand-curated security pins, not ordinary dependencies. In `overrides`, the KEY encodes the vulnerable range and the value is the patched floor, so Renovate reads the value as a plain range and offers the latest major \u2014 which forces that major on every transitive consumer matched by the key. On blue-skysolutions.com that turned `js-yaml@>=3.0.0 <3.15.0` into ^4.3.1, forcing @istanbuljs/load-nyc-config across the safeLoad API removal. Advisory bumps here have to be made by hand, against the advisory's own fix floor.",
       "matchDepTypes": [
         "pnpm-workspace.overrides",
         "pnpm.overrides",
@@ -36,25 +40,64 @@
       "enabled": false
     },
     {
+      "description": "Third-party minor and patch updates arrive as ONE grouped, automergeable PR per repo rather than one PR per package. Placed before the first-party rule below so that rule still overrides groupName and minimumReleaseAge for @corey-alan-consulting/** \u2014 Renovate applies packageRules in order and later matches win. Why: on 2026-10-12 the fleet held 34 stale Renovate PRs and 223 open Dependabot alerts, 70 of them high or critical, runtime-scope and with a published fix. They were not ignored out of neglect; they were unmergeable with confidence, because no app PR gate compiled the app and green therefore meant 'types still check' rather than 'it still builds'. app-pr-checks v1.12.0 added that build step, which is what makes automerge here defensible at all. Majors are excluded: breaking by semver, so they keep opening individual PRs for review. Automerge assumes the consuming repo gates merges on required status checks, and it is NOT a release: the renovate-changeset workflow opens a separate changeset PR afterwards that a human still merges, so a dependency reaches production only by a deliberate act.",
+      "matchUpdateTypes": [
+        "minor",
+        "patch"
+      ],
+      "groupName": "non-major dependencies",
+      "automerge": true,
+      "minimumReleaseAge": "3 days"
+    },
+    {
       "description": "First-party packages: group + automerge minor/patch on green CI once a release has aged a day. Majors are breaking by semver, so they open a normal PR for human review. Automerge assumes the consuming repo gates merges on required status checks.",
-      "matchPackageNames": ["@corey-alan-consulting/**"],
-      "matchUpdateTypes": ["minor", "patch"],
+      "matchPackageNames": [
+        "@corey-alan-consulting/**"
+      ],
+      "matchUpdateTypes": [
+        "minor",
+        "patch"
+      ],
       "groupName": "internal packages",
       "automerge": true,
       "minimumReleaseAge": "1 day"
     },
     {
       "description": "First-party reusable workflows / composite actions: bump the SHA pin when a new deploy-workflows release tag is cut; automerge non-major on green CI, same policy as internal packages.",
-      "matchManagers": ["github-actions"],
-      "matchPackageNames": ["Corey-Alan-Consulting/deploy-workflows"],
-      "matchUpdateTypes": ["minor", "patch"],
+      "matchManagers": [
+        "github-actions"
+      ],
+      "matchPackageNames": [
+        "Corey-Alan-Consulting/deploy-workflows"
+      ],
+      "matchUpdateTypes": [
+        "minor",
+        "patch"
+      ],
       "groupName": "deploy-workflows",
       "automerge": true
     },
     {
       "description": "Coordinate Auth.js bumps across repos while next-auth is still in beta.",
-      "matchPackageNames": ["next-auth", "@auth/**"],
+      "matchPackageNames": [
+        "next-auth",
+        "@auth/**"
+      ],
       "groupName": "auth.js"
     }
-  ]
+  ],
+  "schedule": [
+    "before 6am on monday"
+  ],
+  "vulnerabilityAlerts": {
+    "description": "Security fixes escape every throttle above: they ignore the weekly schedule, leave the non-major group so one unrelated failure cannot hold a CVE fix hostage, and skip minimumReleaseAge entirely \u2014 a three-day soak is prudent against a compromised release and indefensible against a known-exploited one. Deliberately does NOT set automerge. vulnerabilityAlerts is a separate config object rather than a packageRule, and it is not established that a consuming repo's blanket automerge:false packageRule reaches inside it \u2014 platform-infra relies on exactly such a rule to keep production infrastructure off automerge. A repo that wants security automerge can opt in locally, where the blast radius is visible.",
+    "schedule": [
+      "at any time"
+    ],
+    "groupName": null,
+    "minimumReleaseAge": null,
+    "labels": [
+      "security"
+    ]
+  }
 }

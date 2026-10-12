@@ -72,11 +72,25 @@ jobs:
           permission-contents: write
           permission-pull-requests: write
 
+      # token: the App token, NOT the default GITHUB_TOKEN. This job declares
+      # no permissions, so GITHUB_TOKEN carries no scopes at all and cloning a
+      # private repo with it fails `remote: Repository not found` — a 404, not
+      # a 403, because GitHub will not confirm a repo you cannot read. That is
+      # exactly how this workflow failed silently from the day it shipped: 15
+      # merged Renovate PRs across three repos, 15 failures, zero successes,
+      # and the "merged but never released" hole it exists to close stayed
+      # open the whole time. Found 2026-10-12 by watching the first automerged
+      # dependency PR actually land.
+      #
+      # persist-credentials stays false deliberately: the script below pushes
+      # with its own authenticated remote, so the token must not linger in
+      # .git/config afterwards.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ inputs.base-branch }}
           fetch-depth: 0
           persist-credentials: false
+          token: ${{ steps.app-token.outputs.token }}
 
       - name: Open a changeset PR if the merge released nothing
         env:

@@ -123,9 +123,13 @@ jobs:
           # old names — the dependabot v2 bump landed without this migration.
           version-script: pnpm version-packages
           # `changeset tag` updates versions, consumes changesets, regenerates
-          # CHANGELOGs, and creates git tags but does NOT publish. The action
-          # still parses "New tag" lines from stdout to populate
-          # `publishedPackages`, which the publish step below gates on.
+          # CHANGELOGs, and creates git tags but does NOT publish. action v2 no
+          # longer scrapes stdout for "New tag" lines — it injects
+          # CHANGESETS_OUTPUT into this script and reads the NDJSON that
+          # Changesets v3 writes there, exposing it as the `published-packages`
+          # output (v1 spelled it `publishedPackages`; v2 renamed every output
+          # to kebab-case while leaving `published` alone, which is why a stale
+          # name fails silently rather than failing the gate).
           publish-script: pnpm exec changeset tag
           commit-message: 'chore: release packages'
           pr-title: 'chore: release packages'
@@ -181,7 +185,7 @@ jobs:
         if: steps.changesets.outputs.published == 'true'
         env:
           # Passed via env (not inlined) so the JSON can't break the shell.
-          PUBLISHED_PACKAGES: ${{ steps.changesets.outputs.publishedPackages }}
+          PUBLISHED_PACKAGES: ${{ steps.changesets.outputs.published-packages }}
         run: |
           set -euo pipefail
           # Map each published package name -> its workspace dir, then publish.
@@ -219,7 +223,7 @@ jobs:
         if: ${{ inputs.app-release-package != '' && steps.changesets.outputs.published == 'true' }}
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
-          PUBLISHED_PACKAGES: ${{ steps.changesets.outputs.publishedPackages }}
+          PUBLISHED_PACKAGES: ${{ steps.changesets.outputs.published-packages }}
           APP_PACKAGE: ${{ inputs.app-release-package }}
         run: |
           set -euo pipefail

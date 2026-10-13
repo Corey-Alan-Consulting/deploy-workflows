@@ -188,6 +188,17 @@ jobs:
           PUBLISHED_PACKAGES: ${{ steps.changesets.outputs.published-packages }}
         run: |
           set -euo pipefail
+          # The action reported something published, so the package list must be
+          # non-empty. An empty list means the output contract drifted -- v2 renamed
+          # every output to kebab-case while leaving `published` alone, so a stale
+          # name leaves the gate green and the list blank. `jq -r '.[].name'` over
+          # empty input emits nothing and exits 0, so without this check the step
+          # reports success having published nothing at all. Fail loudly instead.
+          if [ -z "${PUBLISHED_PACKAGES:-}" ] \
+            || [ "$(printf '%s' "$PUBLISHED_PACKAGES" | jq -r 'length' 2>/dev/null || echo 0)" = "0" ]; then
+            echo "::error title=Empty published-packages::changesets reported published=true but the package list is empty. Refusing to report success without publishing. Verify this workflow reads the output name the pinned changesets/action actually emits."
+            exit 1
+          fi
           # Map each published package name -> its workspace dir, then publish.
           pnpm list -r --depth -1 --json > .pkg-paths.json
           printf '%s' "$PUBLISHED_PACKAGES" | jq -r '.[].name' | while read -r name; do
@@ -227,6 +238,17 @@ jobs:
           APP_PACKAGE: ${{ inputs.app-release-package }}
         run: |
           set -euo pipefail
+          # The action reported something published, so the package list must be
+          # non-empty. An empty list means the output contract drifted -- v2 renamed
+          # every output to kebab-case while leaving `published` alone, so a stale
+          # name leaves the gate green and the list blank. `jq -r '.[].name'` over
+          # empty input emits nothing and exits 0, so without this check the step
+          # reports success having published nothing at all. Fail loudly instead.
+          if [ -z "${PUBLISHED_PACKAGES:-}" ] \
+            || [ "$(printf '%s' "$PUBLISHED_PACKAGES" | jq -r 'length' 2>/dev/null || echo 0)" = "0" ]; then
+            echo "::error title=Empty published-packages::changesets reported published=true but the package list is empty. The app release cannot be resolved from an empty list. This is a drifted output name, not 'nothing to release' -- the legitimate no-op case below needs a POPULATED list that simply lacks this app."
+            exit 1
+          fi
           version="$(printf '%s' "$PUBLISHED_PACKAGES" \
             | jq -r --arg n "$APP_PACKAGE" '.[] | select(.name == $n) | .version')"
           if [ -z "$version" ]; then

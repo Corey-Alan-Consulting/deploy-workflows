@@ -288,3 +288,75 @@ jobs:
           notes_file="$(mktemp)"
           printf '%s\n' "$notes" > "$notes_file"
           gh release create "$tag" --title "$tag" --notes-file "$notes_file"
+
+      # Post-condition for the whole workflow. Runs unconditionally, so it holds
+      # in both modes: after a publish it confirms the publish actually landed,
+      # and on a version-PR run it confirms nothing has silently fallen out of
+      # the registry.
+      - name: Verify every package version reached the registry
+        env:
+          # Read-only token, same as the install step. Publishing stays on OIDC.
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          # Post-condition for the whole workflow, not just the publish step: every
+          # non-private workspace package's CURRENT version must exist on the registry.
+          #
+          # This is the check that was missing when crm-csv 0.1.2 was versioned, tagged
+          # and committed to main while the publish step silently skipped -- the job went
+          # green, the tag never reached the remote, and the gap was only noticed weeks
+          # later when a consumer still resolved the vulnerable 0.1.1.
+          #
+          # Deliberately scoped to CURRENT versions rather than every historical tag.
+          # Comparing all tags would permanently flag six pre-existing holes from the
+          # June scaffolding (crm-core 0.1.0, crm-prisma 0.1.0, lms-content 0.1.0,
+          # lms-courses 0.2.0, lms-quiz 0.1.0, lms-roster 0.1.0) that are superseded by
+          # later published releases and referenced by nobody -- noise that would need an
+          # allowlist and would train people to ignore this check. Current-version parity
+          # is the invariant that actually matters and it has no known false positives.
+          #
+          # Runs unconditionally, so it holds in both workflow modes: after a publish it
+          # confirms the publish landed, and on a version-PR run it confirms nothing has
+          # silently fallen out of the registry.
+          pnpm list -r --depth -1 --json > .pkg-parity.json
+
+          missing=""
+          unreadable=""
+          checked=0
+
+          while IFS=$'\t' read -r name version dir; do
+            [ -n "$name" ] || continue
+            [ -f "$dir/package.json" ] || continue
+            # Private packages are versioned and tagged (a deployable app gets its
+            # `app@<v>` tag) but never published, so they have nothing to verify.
+            if [ "$(jq -r '.private // false' "$dir/package.json")" = "true" ]; then
+              continue
+            fi
+            checked=$((checked + 1))
+            if npm view "${name}@${version}" version >/dev/null 2>&1; then
+              echo "  ok        ${name}@${version}"
+            elif npm view "$name" version >/dev/null 2>&1; then
+              # The package is readable but this version is not there: a real hole.
+              echo "  MISSING   ${name}@${version}"
+              missing="${missing} ${name}@${version}"
+            else
+              # The package itself is unreadable. These are `access: restricted`, and npm
+              # answers 404 for unauthorized exactly as it does for absent, so this is an
+              # auth problem and must not be reported as a missing release.
+              echo "  UNREADABLE ${name} (cannot distinguish absent from unauthorized)"
+              unreadable="${unreadable} ${name}"
+            fi
+          done < <(jq -r '.[] | [.name, .version, .path] | @tsv' .pkg-parity.json)
+
+          rm -f .pkg-parity.json
+
+          if [ -n "$unreadable" ]; then
+            echo "::error title=Registry unreadable::Could not read these packages from npm:${unreadable}. npm returns 404 for both 'unpublished' and 'unauthorized', so this cannot be treated as a missing release. Check the read token's access to the scope."
+            exit 1
+          fi
+          if [ -n "$missing" ]; then
+            echo "::error title=Version not on the registry::These versions exist in the repo but not on npm:${missing}. The release pipeline reported success without publishing them. Re-run the release; if the git tag already exists, delete the remote tag first so changeset tag re-creates it, because publish detection is driven by tag creation."
+            exit 1
+          fi
+          echo "Registry parity verified for ${checked} published package(s)."

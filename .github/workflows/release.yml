@@ -86,6 +86,12 @@ jobs:
           permission-contents: write
           permission-pull-requests: write
 
+      # zizmor: ignore[artipacked]
+      # The persisted credential is the POINT here, and the `token:` line below
+      # has said so since it was written: changesets pushes the version commit
+      # and tags from this checkout. Unlike the build workflows - where nothing
+      # used the token after checkout and it was dropped - removing it here
+      # breaks releases.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
@@ -104,6 +110,13 @@ jobs:
           registry-url: 'https://registry.npmjs.org'
 
       # Node 22 ships npm 10.x; npm 11.5.1+ gates Trusted Publishing OIDC.
+      # zizmor: ignore[adhoc-packages]
+      # Required, not convenience: the comment above is the whole reason. Node
+      # 22 ships npm 10.x and Trusted Publishing OIDC needs 11.5.1+, so the
+      # alternative to this ad-hoc upgrade is publishing with a long-lived
+      # token - which is what the use-trusted-publishing audit asks us to
+      # avoid. Pinned to @latest deliberately: a pinned npm would go stale
+      # against npm's own OIDC gate.
       - name: Upgrade npm to OIDC-capable version
         run: npm install -g npm@latest
 

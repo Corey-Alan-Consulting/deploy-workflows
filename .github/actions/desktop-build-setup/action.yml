@@ -104,6 +104,11 @@ runs:
       uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
 
     - name: Setup Node.js
+      # zizmor: ignore[use-trusted-publishing]
+      # FALSE POSITIVE, same as in app-pr-checks.yml. This composite sets up a
+      # desktop BUILD toolchain; it publishes nothing to a package registry.
+      # The repo's npm publishing path (release.yml) already uses Trusted
+      # Publishing via OIDC, which is what this audit asks for.
       uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
       with:
         node-version: ${{ inputs.node-version }}

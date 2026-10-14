@@ -114,6 +114,9 @@ jobs:
       image: ${{ env.IMAGE }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # Nothing in this workflow needs the token after checkout.
+          persist-credentials: false
 
       - id: auth
         uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
@@ -180,7 +183,10 @@ jobs:
         uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
         with:
           cosign-release: v3.0.6
-      - run: cosign sign --yes "${IMAGE}@${{ steps.push.outputs.digest }}"
+      # Digest through env for the same reason IMAGE already is: it is data.
+      - env:
+          DIGEST: ${{ steps.push.outputs.digest }}
+        run: cosign sign --yes "${IMAGE}@${DIGEST}"
 
   trivy-image-scan:
     name: Scan Image

@@ -247,6 +247,9 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 1
+          # No job in this workflow runs a git operation needing the token, so
+          # leaving it in .git/config only risks it reaching an artifact.
+          persist-credentials: false
 
       - name: Resolve package manager commands
         id: pm
@@ -367,16 +370,35 @@ jobs:
 
       - name: Pre-build commands
         if: inputs.pre_build_commands != ''
+        # zizmor: ignore[template-injection]
+        # ACCEPTED, not overlooked. This workflow's contract includes command
+        # inputs - pre_build_commands, lint_command, test_command,
+        # audit_command, build_command - so a caller supplying shell is the
+        # feature, and env-indirection cannot express it without eval.
+        # The trust boundary is whoever can edit the CALLER's workflow, who
+        # can already run arbitrary code in that repo's CI.
+        # The residual risk is caller-side: a caller interpolating untrusted
+        # context (a PR title, a comment body) into one of these inputs. All
+        # nine callers were checked on 2026-10-14 and every one passes a
+        # literal string. That is the thing to re-check, not this line.
         run: ${{ inputs.pre_build_commands }}
 
       - name: Lint
         if: inputs.enable_lint && steps.pm.outputs.lint_cmd != 'skip'
+        # zizmor: ignore[template-injection]
+        # Same accepted risk as pre_build_commands above: lint_cmd is the
+        # caller's `lint_command` input when supplied, falling back to a
+        # package-manager default. A command input is shell by design.
         run: ${{ steps.pm.outputs.lint_cmd }}
         env:
           NODE_OPTIONS: '--max-old-space-size=4096'
 
       - name: Test
         if: inputs.enable_test && steps.pm.outputs.test_cmd != 'skip'
+        # zizmor: ignore[template-injection]
+        # Same accepted risk as pre_build_commands above: test_cmd is the
+        # caller's `test_command` input when supplied, falling back to a
+        # package-manager default. A command input is shell by design.
         run: ${{ steps.pm.outputs.test_cmd }}
         env:
           NODE_OPTIONS: '--max-old-space-size=4096'
@@ -397,6 +419,9 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 1
+          # No job in this workflow runs a git operation needing the token, so
+          # leaving it in .git/config only risks it reaching an artifact.
+          persist-credentials: false
 
       - name: Resolve package manager commands
         id: pm
@@ -446,6 +471,10 @@ jobs:
           eval "$INSTALL_CMD" || true
 
       - name: Security audit
+        # zizmor: ignore[template-injection]
+        # Same accepted risk as pre_build_commands above: audit_cmd is the
+        # caller's `audit_command` input when supplied, falling back to a
+        # package-manager default. A command input is shell by design.
         run: ${{ steps.pm.outputs.audit_cmd }}
         continue-on-error: true
 
@@ -496,6 +525,9 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 1
+          # No job in this workflow runs a git operation needing the token, so
+          # leaving it in .git/config only risks it reaching an artifact.
+          persist-credentials: false
 
       - name: Check for Bitwarden token
         id: bws-check
@@ -613,6 +645,17 @@ jobs:
 
       - name: Pre-build commands
         if: inputs.pre_build_commands != ''
+        # zizmor: ignore[template-injection]
+        # ACCEPTED, not overlooked. This workflow's contract includes command
+        # inputs - pre_build_commands, lint_command, test_command,
+        # audit_command, build_command - so a caller supplying shell is the
+        # feature, and env-indirection cannot express it without eval.
+        # The trust boundary is whoever can edit the CALLER's workflow, who
+        # can already run arbitrary code in that repo's CI.
+        # The residual risk is caller-side: a caller interpolating untrusted
+        # context (a PR title, a comment body) into one of these inputs. All
+        # nine callers were checked on 2026-10-14 and every one passes a
+        # literal string. That is the thing to re-check, not this line.
         run: ${{ inputs.pre_build_commands }}
 
       # No-op without a token; when enabled, a `turbo run build` replays an
@@ -631,12 +674,21 @@ jobs:
         run: rm -f .env .env.local .env.production .env.production.local .env.development .env.development.local 2>/dev/null || true
 
       - name: Build
+        # zizmor: ignore[template-injection]
+        # Same accepted risk as pre_build_commands above: build_cmd is the
+        # caller's `build_command` input when supplied, falling back to a
+        # package-manager default. A command input is shell by design.
         run: ${{ steps.pm.outputs.build_cmd }}
         env:
           NODE_OPTIONS: '--max-old-space-size=4096'
 
       - name: Stage build artifacts
         if: inputs.preserve_artifact_paths
+        env:
+          # DATA, not code: a newline-separated path list the loop below reads.
+          # Inline ${{ }} let a caller's value close the quoting and run shell;
+          # through env it can only ever be a string.
+          BUILD_OUTPUT_PATHS: ${{ inputs.build_output_paths }}
         run: |
           mkdir -p staged-output
           while IFS= read -r path; do
@@ -651,7 +703,7 @@ jobs:
             else
               echo "Warning: $path does not exist, skipping"
             fi
-          done <<< "${{ inputs.build_output_paths }}"
+          done <<< "$BUILD_OUTPUT_PATHS"
 
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: inputs.preserve_artifact_paths
@@ -698,6 +750,8 @@ jobs:
       image: ${{ env.IMAGE }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         if: inputs.build_mode == 'prebuilt'
@@ -713,7 +767,11 @@ jobs:
 
       - uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3.0.1
 
-      - run: gcloud auth configure-docker ${{ inputs.registry }}
+      # Registry through env, not inline ${{ }} — matching the identical step in
+      # the trivy job, which has been written this way from the start.
+      - env:
+          REGISTRY: ${{ inputs.registry }}
+        run: gcloud auth configure-docker "$REGISTRY"
 
       - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
         with:
@@ -783,7 +841,10 @@ jobs:
         uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
         with:
           cosign-release: ${{ inputs.cosign_version }}
-      - run: cosign sign --yes "${IMAGE}@${{ steps.push.outputs.digest }}"
+      # Digest through env for the same reason IMAGE already is: it is data.
+      - env:
+          DIGEST: ${{ steps.push.outputs.digest }}
+        run: cosign sign --yes "${IMAGE}@${DIGEST}"
 
   # ===========================================================================
   # Migration Image (optional - for apps with database migrations)
@@ -812,6 +873,8 @@ jobs:
       image: ${{ env.MIGRATE_IMAGE }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - id: auth
         uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
@@ -821,7 +884,11 @@ jobs:
 
       - uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3.0.1
 
-      - run: gcloud auth configure-docker ${{ inputs.registry }}
+      # Registry through env, not inline ${{ }} — matching the identical step in
+      # the trivy job, which has been written this way from the start.
+      - env:
+          REGISTRY: ${{ inputs.registry }}
+        run: gcloud auth configure-docker "$REGISTRY"
 
       - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
         with:

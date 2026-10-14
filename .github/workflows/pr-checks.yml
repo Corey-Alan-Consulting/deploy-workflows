@@ -49,6 +49,23 @@ jobs:
       - uses: zizmorcore/zizmor-action@cc914d7f3750a2d13d75c7f184a1060aa0e9d482 # v0.6.4
         continue-on-error: true
 
+  renovate-config:
+    name: renovate preset
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # renovate-config.json is consumed by SEVENTEEN repos via
+      # `extends: github>Corey-Alan-Consulting/deploy-workflows:renovate-config`,
+      # and nothing validated it. An invalid key does not fail loudly — Renovate
+      # logs the problem on its own dashboard and carries on with the rest of the
+      # config, so a typo silently disables whichever rule it lands in across the
+      # whole fleet. That is exactly the failure mode that let the
+      # deploy-workflows pin rule look broken for months (#103). Fail here instead.
+      - run: npx --yes --package renovate renovate-config-validator renovate-config.json
+
   announcement-scripts:
     name: release-announcement scripts
     runs-on: ubuntu-latest

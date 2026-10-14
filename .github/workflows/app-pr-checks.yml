@@ -169,6 +169,16 @@ jobs:
         with:
           run_install: false
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        # zizmor: ignore[use-trusted-publishing]
+        # FALSE POSITIVE. registry-url + always-auth here authenticate INSTALLS
+        # of restricted @corey-alan-consulting packages; this job lints, builds
+        # and tests and never runs `npm publish`. The repo's publishing path
+        # (release.yml) already uses Trusted Publishing via OIDC, which is what
+        # this audit asks for.
+        #
+        # Comment sits INSIDE the step, not above it: this step begins at
+        # `- uses:`, so an ignore placed above the step is outside its span and
+        # zizmor does not honour it.
         with:
           node-version: ${{ inputs.node-version }}
           cache: 'pnpm'

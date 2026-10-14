@@ -8,6 +8,13 @@ updates:
     schedule:
       interval: weekly
       day: monday
+    # Don't adopt a release the day it ships. A compromised action release is
+    # usually caught and yanked within days, and nothing here is urgent enough
+    # to need day-zero: these are SHA pins on build tooling, and a genuine
+    # security fix can still be taken by hand. Security updates are exempt from
+    # cooldown by Dependabot, so this delays convenience bumps only.
+    cooldown:
+      default-days: 7
     open-pull-requests-limit: 5
     groups:
       actions:

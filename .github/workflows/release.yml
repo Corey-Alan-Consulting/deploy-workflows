@@ -352,11 +352,21 @@ jobs:
           rm -f .pkg-parity.json
 
           if [ -n "$unreadable" ]; then
-            echo "::error title=Registry unreadable::Could not read these packages from npm:${unreadable}. npm returns 404 for both 'unpublished' and 'unauthorized', so this cannot be treated as a missing release. Check the read token's access to the scope."
-            exit 1
+            # WARN, never fail. Inability to verify is not evidence of a problem,
+            # and a verification step must not be able to break a working
+            # release. `platform` omits the optional NPM_TOKEN secret, so its
+            # first run of this check reported all 11 packages unreadable and
+            # failed a release that had nothing to publish and was otherwise
+            # fine. npm answers 404 identically for unauthorized and absent, so
+            # the honest outcome here is "could not verify", not "broken".
+            echo "::warning title=Registry parity unverified::Could not read these packages from npm:${unreadable}. npm returns 404 for both 'unpublished' and 'unauthorized', so this is not evidence of a missing release -- it means parity could not be checked. Pass the optional NPM_TOKEN secret to this workflow to enable it."
           fi
           if [ -n "$missing" ]; then
             echo "::error title=Version not on the registry::These versions exist in the repo but not on npm:${missing}. The release pipeline reported success without publishing them. Re-run the release; if the git tag already exists, delete the remote tag first so changeset tag re-creates it, because publish detection is driven by tag creation."
             exit 1
           fi
-          echo "Registry parity verified for ${checked} published package(s)."
+          if [ -n "$unreadable" ]; then
+            echo "Registry parity checked for ${checked} package(s); some could not be read (see warning above)."
+          else
+            echo "Registry parity verified for ${checked} published package(s)."
+          fi

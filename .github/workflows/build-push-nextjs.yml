@@ -88,6 +88,11 @@ on:
         required: false
         type: string
         default: ""
+      type_check_command:
+        description: "Override type-check command (empty = auto: `<pm> run type-check` when package.json has that script, else skipped; 'skip' to skip)"
+        required: false
+        type: string
+        default: ""
       enable_lint:
         description: "Run linting in the Test & Quality job"
         required: false
@@ -95,6 +100,11 @@ on:
         default: true
       enable_test:
         description: "Run tests in the Test & Quality job"
+        required: false
+        type: boolean
+        default: true
+      enable_type_check:
+        description: "Run the type-check step (tsc --noEmit via the package script) before tests"
         required: false
         type: boolean
         default: true
@@ -258,6 +268,7 @@ jobs:
           INPUT_INSTALL: ${{ inputs.install_command }}
           INPUT_LINT: ${{ inputs.lint_command }}
           INPUT_TEST: ${{ inputs.test_command }}
+          INPUT_TYPE_CHECK: ${{ inputs.type_check_command }}
         run: |
           # Install command
           if [ "$INPUT_INSTALL" = "skip" ]; then
@@ -282,6 +293,21 @@ jobs:
               yarn) echo "lint_cmd=yarn lint" >> "$GITHUB_OUTPUT" ;;
               *)    echo "lint_cmd=pnpm lint" >> "$GITHUB_OUTPUT" ;;
             esac
+          fi
+          # Type-check command. Defaults only when the package declares the
+          # script, so repos without one are skipped rather than failed.
+          if [ "$INPUT_TYPE_CHECK" = "skip" ]; then
+            echo "type_check_cmd=skip" >> "$GITHUB_OUTPUT"
+          elif [ -n "$INPUT_TYPE_CHECK" ]; then
+            echo "type_check_cmd=$INPUT_TYPE_CHECK" >> "$GITHUB_OUTPUT"
+          elif jq -e '.scripts["type-check"]' package.json >/dev/null 2>&1; then
+            case "$PM" in
+              npm)  echo "type_check_cmd=npm run type-check" >> "$GITHUB_OUTPUT" ;;
+              yarn) echo "type_check_cmd=yarn type-check" >> "$GITHUB_OUTPUT" ;;
+              *)    echo "type_check_cmd=pnpm type-check" >> "$GITHUB_OUTPUT" ;;
+            esac
+          else
+            echo "type_check_cmd=skip" >> "$GITHUB_OUTPUT"
           fi
           # Test command
           if [ "$INPUT_TEST" = "skip" ]; then
@@ -390,6 +416,16 @@ jobs:
         # caller's `lint_command` input when supplied, falling back to a
         # package-manager default. A command input is shell by design.
         run: ${{ steps.pm.outputs.lint_cmd }}
+        env:
+          NODE_OPTIONS: '--max-old-space-size=4096'
+
+      - name: Type check
+        if: inputs.enable_type_check && steps.pm.outputs.type_check_cmd != 'skip'
+        # zizmor: ignore[template-injection]
+        # Same accepted risk as lint_cmd above: a command input is shell by
+        # design. This is the release path's explicit type gate; next.config
+        # in the template skips the duplicate check inside `next build`.
+        run: ${{ steps.pm.outputs.type_check_cmd }}
         env:
           NODE_OPTIONS: '--max-old-space-size=4096'
 

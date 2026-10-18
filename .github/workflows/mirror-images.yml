@@ -67,7 +67,9 @@ jobs:
         run: |
           set -euo pipefail
           while IFS=$'\t' read -r _ dst; do
-            skopeo inspect --no-creds "docker://$DEST/$dst" >/dev/null \
-              && echo "anonymous pull ok: $DEST/$dst" \
-              || { echo "::warning::$DEST/$dst is not anonymously pullable; set the package visibility to public once in the org's package settings"; }
+            if skopeo inspect --no-creds "docker://$DEST/$dst" >/dev/null; then
+              echo "anonymous pull ok: $DEST/$dst"
+            else
+              echo "::warning::$DEST/$dst is not anonymously pullable; set the package visibility to public once in the org's package settings"
+            fi
           done < <(jq -r '.images[] | [.source, .target] | @tsv' mirror-images.json)

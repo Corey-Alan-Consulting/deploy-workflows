@@ -1,0 +1,73 @@
+# Mirror the public images the org's CI pulls as service containers into
+# GHCR, so PR jobs on hosted runners pull from a registry on the same control
+# plane instead of Docker Hub or ECR Public, whose anonymous quotas are shared
+# across every hosted runner and were exhausted mid-day on 2026-10-18.
+#
+# This repo is public, so packages first published from it with GITHUB_TOKEN
+# are public: consumers need no credentials. The list lives in
+# mirror-images.json; a change to it re-runs the mirror on merge.
+name: Mirror images
+
+on:
+  schedule:
+    - cron: "17 4 * * 1" # weekly, Monday 04:17 UTC
+  push:
+    branches: [main]
+    paths: [mirror-images.json, .github/workflows/mirror-images.yml]
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: mirror-images
+  cancel-in-progress: false
+
+jobs:
+  mirror:
+    name: Copy to GHCR
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Log in to GHCR
+        env:
+          TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ACTOR: ${{ github.actor }}
+        run: |
+          command -v skopeo >/dev/null || { sudo apt-get update -qq && sudo apt-get install -y -qq skopeo; }
+          echo "$TOKEN" | skopeo login ghcr.io --username "$ACTOR" --password-stdin
+
+      - name: Copy every listed image
+        env:
+          DEST: ghcr.io/corey-alan-consulting/mirror
+        run: |
+          set -euo pipefail
+          fail=0
+          while IFS=$'\t' read -r src dst; do
+            echo "::group::$src -> $DEST/$dst"
+            ok=0
+            for attempt in 1 2 3; do
+              if skopeo copy --all --retry-times 3 "docker://$src" "docker://$DEST/$dst"; then ok=1; break; fi
+              echo "attempt $attempt failed; backing off"; sleep $((attempt * 30))
+            done
+            echo "::endgroup::"
+            [ "$ok" = 1 ] || { echo "::error::could not mirror $src"; fail=1; }
+          done < <(jq -r '.images[] | [.source, .target] | @tsv' mirror-images.json)
+          exit $fail
+
+      - name: Verify anonymous pull
+        env:
+          DEST: ghcr.io/corey-alan-consulting/mirror
+        run: |
+          set -euo pipefail
+          while IFS=$'\t' read -r _ dst; do
+            skopeo inspect --no-creds "docker://$DEST/$dst" >/dev/null \
+              && echo "anonymous pull ok: $DEST/$dst" \
+              || { echo "::warning::$DEST/$dst is not anonymously pullable; set the package visibility to public once in the org's package settings"; }
+          done < <(jq -r '.images[] | [.source, .target] | @tsv' mirror-images.json)

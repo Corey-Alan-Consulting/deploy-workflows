@@ -1,0 +1,7 @@
+{
+  "$comment": "Public images the org's CI pulls as service containers, mirrored weekly into ghcr.io/corey-alan-consulting/mirror/<target> by mirror-images.yml so PR jobs never depend on Docker Hub's or ECR Public's anonymous pull quotas. Add an entry, merge, and the mirror runs; consumers reference ghcr.io/corey-alan-consulting/mirror/<target>.",
+  "images": [
+    { "source": "docker.io/library/postgres:16",        "target": "postgres:16" },
+    { "source": "docker.io/library/postgres:16-alpine", "target": "postgres:16-alpine" }
+  ]
+}

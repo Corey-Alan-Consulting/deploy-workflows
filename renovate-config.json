@@ -1,6 +1,6 @@
 {
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
-  "description": "Shared Renovate preset for Corey Alan repos. Reference with: { \"extends\": [\"github>Corey-Alan-Consulting/deploy-workflows:renovate-config\"] } rebaseWhen=automerging: a PR that waits for a human is not rebased on every merge to main (the branch protections require up-to-date branches, so the default rebased every open PR after every merge and reran its full check set; ~15 merges on 2026-10-19 cost on the order of 120 runs on platform-infra alone); GitHub's update-branch at merge time runs the checks once instead. prConcurrentLimit=5 caps open Renovate PRs per repo; the rest queue on the dependency dashboard.",
+  "description": "Shared Renovate preset for Corey Alan repos. Reference with: { \"extends\": [\"github>Corey-Alan-Consulting/deploy-workflows:renovate-config\"] } rebaseWhen=automerging: a PR that waits for a human is not rebased on every merge to main (the branch protections require up-to-date branches, so the default rebased every open PR after every merge and reran its full check set; ~15 merges on 2026-10-19 cost on the order of 120 runs on platform-infra alone); GitHub's update-branch at merge time runs the checks once instead. prConcurrentLimit=5 caps open Renovate PRs per repo; the rest queue on the dependency dashboard. minimumReleaseAge=7 days globally: a third-party release is not offered until it has been public a week, which is the window in which a compromised or yanked release is usually caught; the group rules keep their shorter soaks (3 days third-party non-major, 1 day first-party) because later rules win, and vulnerabilityAlerts resets it to null so a security fix is never held.",
   "extends": [
     "config:recommended",
     ":dependencyDashboard",
@@ -19,13 +19,13 @@
     {
       "customType": "regex",
       "description": "BuildKit pin in setup-buildx-action driver-opts. Nothing else watches this: `driver-opts: image=moby/buildkit:<tag>` is not a dependency file, not an action ref and not a Dockerfile FROM, so every built-in manager skips it and the pin ages silently. #6's pin went three releases stale exactly this way, and #73's first cut was stale within twenty minutes of being written. Deliberately requires a numeric tag so the floating `buildx-stable-1` this pin exists to replace is never matched.",
-      "fileMatch": [
-        "^\\.github/workflows/[^/]+\\.ya?ml$"
-      ],
       "matchStrings": [
         "driver-opts:\\s*image=(?<depName>moby/buildkit):(?<currentValue>v?[0-9][^\\s\"']*)"
       ],
-      "datasourceTemplate": "docker"
+      "datasourceTemplate": "docker",
+      "managerFilePatterns": [
+        "/^\\.github/workflows/[^/]+\\.ya?ml$/"
+      ]
     }
   ],
   "packageRules": [
@@ -81,7 +81,7 @@
       "automerge": true
     },
     {
-      "description": "First-party reusable workflows / composite actions: bump the SHA pin when a new deploy-workflows release tag is cut; automerge non-major on green CI, same policy as internal packages. PROVEN 2026-10-13 why this rule looked broken for months: it was never a matcher problem. Renovate's Dependency Dashboard listed the update correctly on branch `renovate/deploy-workflows` (so matchPackageNames and groupName both applied) but filed it under `## Awaiting Schedule` on app-template and showcase, and `## Rate-Limited` on jlshaw.link. The rule inherited the root `schedule: [before 6am on monday]`, so the PR could only be raised in one ~6h window a week, and in that window it competed for the default prHourlyLimit against the much larger `non-major dependencies` group and lost. Net effect: the six app repos sat on v1.6.0 while main reached v1.12.5 -- nine minors -- so v1.8.0's generic image-scan gate and v1.10.0's migrate-scan gate were never reaching them. A gate nobody is pinned to is not running, which makes this a security control, not dependency hygiene. Hence `schedule: [at any time]` to escape the weekly window (the same escape vulnerabilityAlerts uses) and `prPriority` above the default 0 so it wins a slot when the hourly limit binds. NOTE: the earlier `digest`-update theory was a red herring -- the single autoclosed digest PR was a separate artifact, and matchUpdateTypes was never what blocked this.",
+      "description": "First-party reusable workflows / composite actions: bump the SHA pin when a new deploy-workflows release tag is cut; automerge non-major on green CI, same policy as internal packages. PROVEN 2026-10-13 why this rule looked broken for months: it was never a matcher problem. Renovate's Dependency Dashboard listed the update correctly on branch `renovate/deploy-workflows` (so matchPackageNames and groupName both applied) but filed it under `## Awaiting Schedule` on app-template and showcase, and `## Rate-Limited` on jlshaw.link. The rule inherited the root `schedule: [before 6am on monday]`, so the PR could only be raised in one ~6h window a week, and in that window it competed for the default prHourlyLimit against the much larger `non-major dependencies` group and lost. Net effect: the six app repos sat on v1.6.0 while main reached v1.12.5 -- nine minors -- so v1.8.0's generic image-scan gate and v1.10.0's migrate-scan gate were never reaching them. A gate nobody is pinned to is not running, which makes this a security control, not dependency hygiene. Hence `schedule: [at any time]` to escape the weekly window (the same escape vulnerabilityAlerts uses) and `prPriority` above the default 0 so it wins a slot when the hourly limit binds. NOTE: the earlier `digest`-update theory was a red herring -- the single autoclosed digest PR was a separate artifact, and matchUpdateTypes was never what blocked this. minimumReleaseAge 1 day overrides the 7-day global: these pins carry the org's own CI gates and a week's delay would be a week without a new gate.",
       "matchManagers": [
         "github-actions"
       ],
@@ -97,7 +97,8 @@
       "schedule": [
         "at any time"
       ],
-      "prPriority": 10
+      "prPriority": 10,
+      "minimumReleaseAge": "1 day"
     },
     {
       "description": "Coordinate Auth.js bumps across repos while next-auth is still in beta.",
@@ -118,6 +119,7 @@
   ],
   "rebaseWhen": "automerging",
   "prConcurrentLimit": 5,
+  "minimumReleaseAge": "7 days",
   "schedule": [
     "before 6am on monday"
   ],

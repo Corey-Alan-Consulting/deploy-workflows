@@ -12,6 +12,9 @@
 #   conventional-commit · lint/type-check/test · pnpm audit (advisory) ·
 #   Trivy two-step (full-severity SARIF uploaded HARD + blocking fixable-
 #   CRITICAL table gate) · gitleaks PR-range secret scan · ci-gates guard
+#   pr-size (advisory: files and lines as a notice + job summary; never fails,
+#   because the implement-spec lane opens large PRs by design and the caller
+#   contract grants no pull-requests: write, so there is no PR comment)
 #
 # The ci-gates guard is embedded inline and scans the CALLER's workflow files,
 # so repos no longer vendor scripts/check-ci-gates.sh — and a caller cannot
@@ -448,6 +451,49 @@ jobs:
 
   # Scaffolded repos: a template token left in deploy.yml deploys green while
   # the secret behind it is silently missing (the reggiesbbq Sentry incident).
+  pr-size:
+    name: PR size (advisory)
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    permissions:
+      contents: read
+    steps:
+      # A size signal, not a gate. Posted as a notice annotation and a job
+      # summary rather than a PR comment: callers grant only pull-requests:
+      # read, and a called workflow cannot exceed its caller's permissions
+      # (that is a startup_failure with no logs, not a soft error). Measured
+      # through the compare API so no checkout is needed; the API lists at
+      # most 300 files, and the summary says when that cap was hit.
+      - name: Measure the diff
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          if [ -z "$BASE" ] || [ -z "$HEAD" ]; then
+            echo "Not a pull_request event; nothing to measure."
+            exit 0
+          fi
+          json=$(gh api "repos/$REPO/compare/$BASE...$HEAD" \
+            --jq '{files: (.files | length), additions: ([.files[].additions] | add // 0), deletions: ([.files[].deletions] | add // 0)}')
+          files=$(jq -r .files <<<"$json"); add=$(jq -r .additions <<<"$json"); del=$(jq -r .deletions <<<"$json")
+          lines=$((add + del))
+          band=S; [ "$lines" -gt 200 ] && band=M; [ "$lines" -gt 500 ] && band=L; [ "$lines" -gt 1000 ] && band=XL
+          capped=""; [ "$files" -ge 300 ] && capped=" (file list capped at 300 by the API; counts are a floor)"
+          echo "::notice title=PR size $band::$files files, +$add/-$del lines$capped. Advisory only."
+          {
+            echo "## PR size: $band"
+            echo
+            echo "| Files | Added | Deleted | Total |"
+            echo "|---|---|---|---|"
+            echo "| $files | $add | $del | $lines |"
+            echo
+            echo "Advisory only, never blocks. S is up to 200 changed lines, M up to 500, L up to 1000, XL above."
+            echo "An implement-spec PR is expected to be L or XL; a hand-written XL is worth splitting.$capped"
+          } >> "$GITHUB_STEP_SUMMARY"
+
   template-tokens:
     name: Template Token Check
     if: inputs.template-tokens-check

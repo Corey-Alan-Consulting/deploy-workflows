@@ -346,6 +346,18 @@ jobs:
             if [ "$(jq -r '.private // false' "$dir/package.json")" = "true" ]; then
               continue
             fi
+            # Verify the version COMMITTED at the pushed ref, not the working tree.
+            # In version-PR mode changesets/action checks out changeset-release/<branch>
+            # and runs the version script before this step, so the tree holds the
+            # NEXT versions, which are unpublished by design. Reading them here
+            # reported every package as MISSING the first time a release PR was
+            # pending for packages that already existed on npm (pos-platform,
+            # 2026-10-22). The committed version is the one a consumer can resolve.
+            rel="${dir#"$GITHUB_WORKSPACE"/}"
+            if committed="$(git show "${GITHUB_SHA}:${rel}/package.json" 2>/dev/null | jq -r '.version')" \
+              && [ -n "$committed" ] && [ "$committed" != "null" ]; then
+              version="$committed"
+            fi
             checked=$((checked + 1))
             if npm view "${name}@${version}" version >/dev/null 2>&1; then
               echo "  ok        ${name}@${version}"

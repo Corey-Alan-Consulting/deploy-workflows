@@ -10,8 +10,9 @@
 #
 # Gates carried here (standards/ci-cd.md):
 #   conventional-commit · lint/type-check/test · pnpm audit (advisory) ·
-#   Trivy two-step (full-severity SARIF uploaded HARD + blocking fixable-
-#   CRITICAL table gate) · gitleaks PR-range secret scan · ci-gates guard
+#   dependency review (blocking: HIGH/CRITICAL advisories in dependencies the
+#   PR changes, with expiring exceptions) · gitleaks PR-range secret scan ·
+#   ci-gates guard
 #   pr-size (advisory: files and lines as a notice + job summary; never fails,
 #   because the implement-spec lane opens large PRs by design and the caller
 #   contract grants no pull-requests: write, so there is no PR comment)
@@ -40,9 +41,7 @@
 #
 # Caller contract (permissions the caller job must grant):
 #   permissions:
-#     actions: read          # upload-sarif on private repos
-#     contents: read
-#     security-events: write # SARIF upload
+#     contents: read         # checkout, dependency review
 #     pull-requests: read    # conventional-commit
 #   jobs:
 #     checks:
@@ -98,14 +97,10 @@ on:
         type: string
         default: 'pnpm test -- --passWithNoTests'
       audit-level:
-        description: 'pnpm audit level (advisory — the blocking gate is Trivy)'
+        description: 'pnpm audit level (advisory — the blocking gate is dependency review)'
         required: false
         type: string
         default: 'high'
-      trivy-skip-dirs:
-        required: false
-        type: string
-        default: 'node_modules,.next,.git,.pnpm-store,coverage,dist,.turbo'
       template-tokens-check:
         description: 'Scaffolded repos: fail if deploy.yml still carries <bws-uuid>-style tokens'
         required: false
@@ -222,6 +217,8 @@ jobs:
     name: Security Scan
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -235,36 +232,77 @@ jobs:
           AUDIT_LEVEL: ${{ inputs.audit-level }}
         run: pnpm audit --audit-level="$AUDIT_LEVEL"
         continue-on-error: true
-      # Full-severity SARIF report for code scanning (non-blocking scan). Kept
-      # separate from the gate: trivy-action drops the severity filter in
-      # sarif mode, so a combined step with exit-code 1 fails on ANY finding.
-      - name: Trivy SARIF report
-        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+      # The PR gate judges only what the PR changes. Dependency review diffs the
+      # dependency graph between base and head and fails on HIGH or CRITICAL
+      # advisories in packages the PR adds or moves to. It replaced a Trivy
+      # filesystem gate that failed a PR on every fixable CRITICAL already in
+      # the repo: on 2026-10-26 one Next.js advisory turned every Next.js repo's
+      # PRs red, including PRs that touched no dependency. It also replaced the
+      # PR SARIF upload, whose code-scanning "Trivy" check compared each PR with
+      # a main-branch analysis most repos never had and so listed old findings
+      # as new. Findings already on main are the daily Trivy scan's job
+      # (trivy-main-scan.yml), which feeds code scanning and the campaigns.
+      #
+      # Dependency review queries the advisory database at PR time, so a newly
+      # published advisory is caught on the first PR that adds the package.
+      # Dependabot alerts lagged five days on two criticals in October 2026.
+      #
+      # Exceptions live in .github/dependency-review-exceptions.yml and each
+      # needs a reason and an expiry no more than 90 days out:
+      #   exceptions:
+      #     - ghsa: GHSA-xxxx-xxxx-xxxx
+      #       statement: Why this is acceptable, and what ends it.
+      #       expires: 2026-12-31
+      # A malformed or expired entry fails this job rather than silently
+      # widening the allow-list.
+      - name: Dependency review exceptions
+        id: exceptions
+        if: github.event_name == 'pull_request'
+        run: |
+          set -euo pipefail
+          f=.github/dependency-review-exceptions.yml
+          if [ ! -f "$f" ]; then
+            echo "allow=" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          today="$(date -u +%F)"
+          horizon="$(date -u -d '+90 days' +%F)"
+          n="$(yq '.exceptions | length' "$f")"
+          failed=0
+          allow=""
+          for i in $(seq 0 $((n - 1))); do
+            ghsa="$(yq -r ".exceptions[$i].ghsa // \"\"" "$f")"
+            statement="$(yq -r ".exceptions[$i].statement // \"\"" "$f")"
+            expires="$(yq -r ".exceptions[$i].expires // \"\"" "$f")"
+            if ! [[ "$ghsa" =~ ^GHSA(-[23456789cfghjmpqrvwx]{4}){3}$ ]]; then
+              echo "::error file=$f::entry $i: '$ghsa' is not a GHSA id"; failed=1; continue
+            fi
+            if [ "${#statement}" -lt 20 ]; then
+              echo "::error file=$f::$ghsa: statement must say why this is acceptable (20+ characters)"; failed=1
+            fi
+            if ! [[ "$expires" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]]; then
+              echo "::error file=$f::$ghsa: expires must be a YYYY-MM-DD date"; failed=1
+            elif [[ "$expires" < "$today" ]]; then
+              echo "::error file=$f::$ghsa: exception expired on $expires"; failed=1
+            elif [[ "$expires" > "$horizon" ]]; then
+              echo "::error file=$f::$ghsa: expires $expires is more than 90 days out ($horizon)"; failed=1
+            fi
+            allow="${allow:+$allow,}$ghsa"
+          done
+          [ "$failed" -eq 0 ] || exit 1
+          echo "allow=$allow" >> "$GITHUB_OUTPUT"
+      # All scopes: pnpm lockfiles report many packages as scope "unknown", and
+      # a vulnerable build-time dependency runs in CI with the repo's secrets.
+      - name: Dependency review (high and critical in changed dependencies)
+        if: github.event_name == 'pull_request'
+        uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v5.0.0
         with:
-          scan-type: fs
-          scan-ref: .
-          format: sarif
-          output: trivy-results.sarif
-          skip-dirs: ${{ inputs.trivy-skip-dirs }}
-      # NOT continue-on-error: a failing upload means code scanning silently
-      # stops receiving results (standards/ci-cd.md gate #1).
-      - uses: github/codeql-action/upload-sarif@6f2ac81f5cd81fe351a197ba0b00d91d03cd2aee # v4.39.0
-        if: hashFiles('trivy-results.sarif') != ''
-        with:
-          sarif_file: trivy-results.sarif
-          category: trivy-fs
-      # Blocking gate on fixable CRITICAL — matches the org deploy gate.
-      # Table format honors the severity filter (sarif mode does not).
-      - name: Trivy gate (fixable CRITICAL)
-        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
-        with:
-          scan-type: fs
-          scan-ref: .
-          format: table
-          severity: CRITICAL
-          ignore-unfixed: true
-          exit-code: '1'
-          skip-dirs: ${{ inputs.trivy-skip-dirs }}
+          fail-on-severity: high
+          fail-on-scopes: runtime, development, unknown
+          allow-ghsas: ${{ steps.exceptions.outputs.allow }}
+          license-check: false
+          show-openssf-scorecard: false
+          comment-summary-in-pr: never
 
       # OS packages are the one class no pre-release check here can see. The
       # gate above is `scan-type: fs` and reads the repo; `perl-base` lives in

@@ -115,6 +115,41 @@
       ],
       "groupName": null,
       "automerge": false
+    },
+    {
+      "description": "OpenTelemetry JS packages move as ONE coordinated, human-reviewed PR, never inside the non-major automerge group. They ship as a set: stable packages (core, resources, sdk-*), experimental 0.x packages and @opentelemetry/api each declare exact or narrow ranges on the others, and a partial bump mixes lines that were never released together. Observed 2026-10-27: the non-major group failed `next build` in gatherbee, reggiesbbq, app-template and coreyalan.com for eight days, holding next 15.5.28 and the @sentry/nextjs security fix behind it, because one OpenTelemetry bump broke the bundle (see the hold below).",
+      "matchPackageNames": [
+        "@opentelemetry/**"
+      ],
+      "groupName": "opentelemetry",
+      "automerge": false
+    },
+    {
+      "description": "HOLD: @opentelemetry/api below 1.10.0. 1.10.0 (2026-10-20) moved to a dual ESM/CJS build whose exports map lists `default` ahead of `require`; with it alone, Next 15's server build fails with `Class extends value undefined` while collecting /_not-found (bisected in app-template #124-#134: api 1.10.0 alone fails, SDK 2.12 with api 1.9.1 passes). The SDK 2.x line itself declares api `>=1.3.0 <1.10.0`. Revisit when an api 1.10.x release or the Next 16 migration builds clean in app-template.",
+      "matchPackageNames": [
+        "@opentelemetry/api"
+      ],
+      "allowedVersions": "<1.10.0"
+    },
+    {
+      "description": "HOLD with the api pin above: the OpenTelemetry JS SDK 3.0 line (stable 3.x, experimental 0.300+) requires @opentelemetry/api >=1.10.0, so it cannot be adopted until that pin lifts. Stable packages stay on 2.x and experimental ones below 0.300. semantic-conventions versions independently and is not held.",
+      "matchPackageNames": [
+        "@opentelemetry/**",
+        "!@opentelemetry/api",
+        "!@opentelemetry/semantic-conventions"
+      ],
+      "matchCurrentVersion": ">=1.0.0",
+      "allowedVersions": "<3.0.0"
+    },
+    {
+      "description": "Experimental half of the hold above.",
+      "matchPackageNames": [
+        "@opentelemetry/**",
+        "!@opentelemetry/api",
+        "!@opentelemetry/semantic-conventions"
+      ],
+      "matchCurrentVersion": "<1.0.0",
+      "allowedVersions": "<0.300.0"
     }
   ],
   "rebaseWhen": "automerging",

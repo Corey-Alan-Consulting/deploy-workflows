@@ -1,0 +1,74 @@
+# Daily Trivy scan of the default branch, uploaded to code scanning.
+#
+# The PR gate (app-pr-checks.yml, dependency review) judges only what a PR
+# changes, so it never sees an advisory published against code already on
+# main. This scan does: it reads the lockfiles every day with a fresh Trivy
+# database, and its code-scanning alerts are what the security campaigns are
+# built from. Dependabot alerts were the first choice for that job and were
+# dropped: in October 2026 they lagged five days on two critical advisories
+# that Trivy reported the day they were published.
+#
+# It replaces the per-repo weekly copies (blue-skysolutions.com trivy-rescan,
+# dispatchr.social and capturly trivy-repo-scan). The category is `trivy-fs`
+# in every repo, so one alert stream per repo; a repo moving off the
+# `trivy-repo` category should delete that category's analyses so its old
+# alerts close.
+#
+# .trivyignore.yaml in the caller is honoured; Trivy stops applying an entry
+# after its `expired_at`.
+#
+# Caller (one small file per repo):
+#   on:
+#     schedule:
+#       - cron: "23 5 * * *"
+#     push:
+#       branches: [main]
+#       paths: [pnpm-lock.yaml]
+#     workflow_dispatch:
+#   permissions: {}
+#   jobs:
+#     scan:
+#       permissions:
+#         contents: read
+#         security-events: write
+#         actions: read          # upload-sarif on private repos
+#       uses: Corey-Alan-Consulting/deploy-workflows/.github/workflows/trivy-main-scan.yml@<sha> # vX.Y.Z
+name: Trivy main scan
+
+on:
+  workflow_call:
+    inputs:
+      skip-dirs:
+        description: Directories Trivy skips.
+        required: false
+        type: string
+        default: 'node_modules,.next,.git,.pnpm-store,coverage,dist,.turbo'
+
+jobs:
+  scan:
+    name: Trivy (default branch)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      security-events: write
+      actions: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Trivy filesystem scan
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          scan-type: fs
+          scan-ref: .
+          scanners: vuln
+          format: sarif
+          output: trivy-results.sarif
+          skip-dirs: ${{ inputs.skip-dirs }}
+      # NOT continue-on-error: a failed upload means main silently stops
+      # reporting, and the campaigns go quiet with it.
+      - uses: github/codeql-action/upload-sarif@6f2ac81f5cd81fe351a197ba0b00d91d03cd2aee # v4.39.0
+        with:
+          sarif_file: trivy-results.sarif
+          category: trivy-fs

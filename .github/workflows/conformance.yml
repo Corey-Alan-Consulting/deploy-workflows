@@ -38,10 +38,24 @@ jobs:
         with:
           persist-credentials: false
 
+      # A repo with no workflows (Tekton-built) has nothing to lint; actionlint
+      # exits fatally on zero files, which would block every PR there.
+      - name: Find workflow files
+        id: workflows
+        run: |
+          if compgen -G ".github/workflows/*.y*ml" >/dev/null; then
+            echo "found=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "found=false" >> "$GITHUB_OUTPUT"
+            echo "No workflow files in .github/workflows; nothing to check."
+          fi
+
       - name: actionlint
+        if: steps.workflows.outputs.found == 'true'
         uses: raven-actions/actionlint@3d39aea434753780c3b3d4a1a31c854b4dbf49d7 # v2.2.0
 
       - name: zizmor
+        if: steps.workflows.outputs.found == 'true'
         run: |
           set -euo pipefail
           pipx install 'zizmor==1.29.0'
@@ -52,6 +66,7 @@ jobs:
           zizmor --no-progress --min-severity=low .github/workflows
 
       - name: Non-negotiable CI gates are not softened
+        if: steps.workflows.outputs.found == 'true'
         run: |
           set -euo pipefail
           status=0
@@ -95,6 +110,7 @@ jobs:
       # Resolves against the ref each job actually pins, not main, because
       # callers sit on different versions.
       - name: Reusable-workflow inputs are declared
+        if: steps.workflows.outputs.found == 'true'
         shell: python3 {0}
         run: |
           """Assert every input and secret a caller passes is declared by the workflow it calls.
@@ -235,6 +251,7 @@ jobs:
       # (coreyalan.com, jlshaw.link, showcase), which is the signal this was
       # known and unenforced.
       - name: One Node version per app
+        if: steps.workflows.outputs.found == 'true'
         shell: python3 {0}
         run: |
           """Assert one Node major across the PR gate, the build, and the image.

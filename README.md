@@ -706,8 +706,29 @@ The check fails a PR when, in any tracked `.trivyignore.yaml`/`.yml`:
 
 A plain `.trivyignore` may not hold entries: it has no statement field and Trivy
 applies it to every scan with no flag. These are the same terms as the
-dependency-review exceptions in `app-pr-checks.yml`. An entry that lapses fails
+dependency-review exceptions read by `security-gate.yml`. An entry that lapses fails
 every PR in the repo until it is renewed with a fresh review or removed.
+
+## Org PR security gate
+
+`.github/workflows/security-gate.yml` runs on every PR in every app repo as an
+org-ruleset required workflow (ruleset "PR security gate"), the same way
+conformance does. It runs dependency review and fails on HIGH or CRITICAL
+advisories in dependencies the PR adds or changes, in any scope. Findings
+already on main belong to the daily `trivy-main-scan.yml`.
+
+Exceptions live in the app repo's `.github/dependency-review-exceptions.yml`:
+
+```yaml
+exceptions:
+  - ghsa: GHSA-xxxx-xxxx-xxxx
+    statement: Why this is acceptable, and what ends it.
+    expires: 2026-12-31   # at most 90 days out
+```
+
+A malformed or expired entry fails the gate. Since v1.15.0, `app-pr-checks.yml`
+no longer runs its own dependency review; its "Security Scan" job keeps the
+advisory `pnpm audit` and the base-layer update lint.
 
 ## Renovate Preset
 

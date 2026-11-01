@@ -1,0 +1,88 @@
+# =============================================================================
+# Org PR security gate — run on every PR in every app repo by an org-ruleset
+# REQUIRED WORKFLOW, the same mechanism as conformance.yml. One definition, so
+# repos with their own CI (showcase, capturly, live.capturly) are gated too and
+# no repo can drop it.
+#
+# Dependency review diffs the dependency graph between base and head and fails
+# on HIGH or CRITICAL advisories in packages the PR adds or moves to. Findings
+# already on main are the daily Trivy scan's job (trivy-main-scan.yml).
+#
+# Exceptions live in the target repo's .github/dependency-review-exceptions.yml
+# (same format app-pr-checks.yml reads); each needs a reason and an expiry no
+# more than 90 days out:
+#   exceptions:
+#     - ghsa: GHSA-xxxx-xxxx-xxxx
+#       statement: Why this is acceptable, and what ends it.
+#       expires: 2026-12-31
+# A malformed or expired entry fails the gate rather than widening it.
+#
+# Rollout: the ruleset starts in EVALUATE mode, then flips to active.
+# =============================================================================
+
+name: Org security gate
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  security-gate:
+    name: PR security gate
+    if: github.repository != 'Corey-Alan-Consulting/deploy-workflows'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Dependency review exceptions
+        id: exceptions
+        run: |
+          set -euo pipefail
+          f=.github/dependency-review-exceptions.yml
+          if [ ! -f "$f" ]; then
+            echo "allow=" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          today="$(date -u +%F)"
+          horizon="$(date -u -d '+90 days' +%F)"
+          n="$(yq '.exceptions | length' "$f")"
+          failed=0
+          allow=""
+          for i in $(seq 0 $((n - 1))); do
+            ghsa="$(yq -r ".exceptions[$i].ghsa // \"\"" "$f")"
+            statement="$(yq -r ".exceptions[$i].statement // \"\"" "$f")"
+            expires="$(yq -r ".exceptions[$i].expires // \"\"" "$f")"
+            if ! [[ "$ghsa" =~ ^GHSA(-[23456789cfghjmpqrvwx]{4}){3}$ ]]; then
+              echo "::error file=$f::entry $i: '$ghsa' is not a GHSA id"; failed=1; continue
+            fi
+            if [ "${#statement}" -lt 20 ]; then
+              echo "::error file=$f::$ghsa: statement must say why this is acceptable (20+ characters)"; failed=1
+            fi
+            if ! [[ "$expires" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]]; then
+              echo "::error file=$f::$ghsa: expires must be a YYYY-MM-DD date"; failed=1
+            elif [[ "$expires" < "$today" ]]; then
+              echo "::error file=$f::$ghsa: exception expired on $expires"; failed=1
+            elif [[ "$expires" > "$horizon" ]]; then
+              echo "::error file=$f::$ghsa: expires $expires is more than 90 days out ($horizon)"; failed=1
+            fi
+            allow="${allow:+$allow,}$ghsa"
+          done
+          [ "$failed" -eq 0 ] || exit 1
+          echo "allow=$allow" >> "$GITHUB_OUTPUT"
+
+      # All scopes: pnpm lockfiles report many packages as scope "unknown", and
+      # a vulnerable build-time dependency runs in CI with the repo's secrets.
+      - name: Dependency review (high and critical in changed dependencies)
+        uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v5.0.0
+        with:
+          fail-on-severity: high
+          fail-on-scopes: runtime, development, unknown
+          allow-ghsas: ${{ steps.exceptions.outputs.allow }}
+          license-check: false
+          show-openssf-scorecard: false
+          comment-summary-in-pr: never

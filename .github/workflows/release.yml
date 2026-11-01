@@ -32,7 +32,7 @@ on:
       node-version:
         description: Node version for the publish job. 22+ required for npm OIDC.
         type: string
-        default: '22'
+        default: '24'
       app-release-package:
         description: >-
           Optional workspace package name (e.g. a private deployable app). When

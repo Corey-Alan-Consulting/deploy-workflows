@@ -218,9 +218,10 @@ jobs:
 
       # One Node version per app: tests, build, and the shipped image.
       #
-      # app-pr-checks defaults to Node 22 and build-push-nextjs to Node 20 —
+      # app-pr-checks defaulted to Node 22 and build-push-nextjs to Node 20 —
       # not a decision, just age (the build workflow is from 2026-03 when 20
-      # was LTS, the PR gate from 2026-09 when 22 was). A repo that pins
+      # was LTS, the PR gate from 2026-09 when 22 was). Both now default to 24,
+      # but defaults drift apart again whenever one moves. A repo that pins
       # neither therefore tests on one Node and builds on another, and the
       # image it ships is a third. app-template did exactly that and the split
       # cost ten weeks of red releases: a test calling `fs.globSync` (Node 22+)

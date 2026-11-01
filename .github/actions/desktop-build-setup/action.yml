@@ -14,7 +14,7 @@ inputs:
   node-version:
     description: 'Node.js version'
     required: false
-    default: '22'
+    default: '24'
   npm-scope:
     description: 'Private npm scope for setup-node auth'
     required: false

@@ -121,7 +121,7 @@ Full CI/CD pipeline: test, security scan, build, Docker push, image sign, image 
 
 | Input | Default | Description |
 |-------|---------|-------------|
-| `node_version` | `20` | Node.js version |
+| `node_version` | `24` | Node.js version |
 | `package_manager` | `pnpm` | Package manager: `pnpm`, `npm`, or `yarn` |
 | `pnpm_version` | `""` | pnpm version (only for `package_manager: pnpm`) |
 | `dockerfile` | `Dockerfile.prebuilt` | Path to Dockerfile |
@@ -383,7 +383,7 @@ jobs:
 
 | Input | Default | Description |
 |-------|---------|-------------|
-| `node-version` | `22` | Node version (22+ required for npm OIDC) |
+| `node-version` | `24` | Node version (22+ required for npm OIDC) |
 | `app-release-package` | `''` | Optional workspace package (e.g. a private deployable app). When set and in the published set, cuts a GitHub Release `<name>@<version>` from `CHANGELOG.md` so a `release: published` workflow (e.g. release-email) fires |
 
 | Secret | Required | Description |

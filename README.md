@@ -676,6 +676,39 @@ Per-brand wiring: a `sk_live_*` release key in Bitwarden
 (`release_key_secret_id`), `BWS_TOKEN_BUILD` + `BWS_TOKEN_PLATFORM`, and the
 brand's announce automation in `platform-infra`.
 
+## Org conformance
+
+`conformance.yml` runs as the required **Workflow conformance** check on app
+repos through the org ruleset, which reads it at `@main`: a change here applies
+fleet-wide on merge, with no release. Its rules are tested by the
+`conformance rules` PR check (`tests/`).
+
+### Trivy ignore files
+
+Accepted Trivy findings go in `.trivyignore.yaml`, one entry per finding, each
+with a reason and an expiry:
+
+```yaml
+vulnerabilities:          # or misconfigurations, secrets, licenses, crypto
+  - id: CVE-2026-12345
+    paths: [package.json]   # optional; or purls
+    statement: Why this is acceptable, and what ends it.
+    expired_at: 2027-01-15  # unquoted YYYY-MM-DD, at most 90 days out
+```
+
+The check fails a PR when, in any tracked `.trivyignore.yaml`/`.yml`:
+
+- an entry's `statement` is missing or under 20 characters;
+- `expired_at` is missing, not an unquoted `YYYY-MM-DD` date (Trivy rejects a
+  quoted one), already past, or more than 90 days from today;
+- an entry or section uses a key Trivy does not know (`expiredAt`, `expires`, …),
+  since Trivy drops it silently.
+
+A plain `.trivyignore` may not hold entries: it has no statement field and Trivy
+applies it to every scan with no flag. These are the same terms as the
+dependency-review exceptions in `app-pr-checks.yml`. An entry that lapses fails
+every PR in the repo until it is renewed with a fresh review or removed.
+
 ## Renovate Preset
 
 Shared dependency-update policy for all repos. Reference it from each repo's

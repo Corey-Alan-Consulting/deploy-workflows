@@ -3,13 +3,17 @@
 #
 # Intended to run as an ORG-RULESET REQUIRED WORKFLOW on every PR in every app
 # repo (Enterprise feature): standards stop being prose the moment this is a
-# required check. Three mechanical gates, none repo-specific:
+# required check. Mechanical gates, none repo-specific:
 #
 #   1. actionlint  — workflow schema/expression/shellcheck validation
 #   2. zizmor      — action pinning + workflow security (policy from the
 #                    repo's .github/zizmor.yml when present)
 #   3. ci-gates    — SARIF uploads / Trivy exit-code gates / cosign steps must
 #                    not be continue-on-error'd (standards/ci-cd.md)
+#   4. reusable-workflow inputs/secrets are declared by the callee
+#   5. one Node major across PR checks, build and image
+#   6. trivyignore — every Trivy ignore entry has a statement and an expiry at
+#                    most 90 days out; plain .trivyignore entries are rejected
 #
 # Rollout: the ruleset starts in EVALUATE mode — results are recorded on the
 # rule insights page without blocking, so repos with a zizmor/actionlint
@@ -328,3 +332,121 @@ jobs:
               print("See framework standards/docker.md and standards/ci-cd.md.")
               sys.exit(1)
           print("Node version is consistent across tests, build and image.")
+
+      # A Trivy ignore entry is an accepted risk, and an accepted risk needs a
+      # reason and a date someone re-reads it. The same contract as the
+      # dependency-review exceptions in app-pr-checks.yml: a statement of 20+
+      # characters and an expiry no more than 90 days out, failing once it
+      # lapses so the entry is renewed or removed on purpose.
+      #
+      # Plain .trivyignore entries are rejected: the format has no statement
+      # field, and Trivy applies it to every scan with no flag, so an entry
+      # there is a silent, unexplained suppression. Use .trivyignore.yaml.
+      #
+      # Unknown keys fail too. Trivy ignores them without a word, and
+      # platform-infra carried `expiredAt` for months: Trivy never saw an
+      # expiry, so its accepted findings could never come back.
+      #
+      # Not gated on workflow files: a repo with none can still carry one.
+      # Kept self-contained; tests/conformance_trivyignore_test.py runs this
+      # script out of this file against fixtures.
+      - name: Trivy ignore entries carry a statement and an expiry
+        shell: python3 {0}
+        run: |
+          """Assert every Trivy ignore entry has a statement and a bounded expiry."""
+          import datetime, os, subprocess, sys, yaml
+
+          HORIZON_DAYS = 90
+          SECTIONS = {"vulnerabilities", "misconfigurations", "secrets", "licenses", "crypto"}
+          ENTRY_KEYS = {"id", "paths", "purls", "statement", "expired_at"}
+          ALIASES = {"expiredAt", "expiredat", "expires", "expiry", "expires_at", "exp"}
+
+          today = datetime.datetime.now(datetime.timezone.utc).date()
+          horizon = today + datetime.timedelta(days=HORIZON_DAYS)
+
+          files = subprocess.run(
+              ["git", "ls-files", "-z"], check=True, capture_output=True, text=True
+          ).stdout.split("\0")
+          ignore_files = sorted(
+              f for f in files
+              if os.path.basename(f) in (".trivyignore", ".trivyignore.yaml", ".trivyignore.yml")
+          )
+
+          if not ignore_files:
+              print("No Trivy ignore files here.")
+              sys.exit(0)
+
+          failed = False
+
+          def err(path, msg):
+              global failed
+              failed = True
+              print(f"::error file={path}::{msg}")
+
+          for path in ignore_files:
+              if os.path.basename(path) == ".trivyignore":
+                  entries = [
+                      line.strip() for line in open(path, encoding="utf-8")
+                      if line.strip() and not line.strip().startswith("#")
+                  ]
+                  for e in entries:
+                      err(path, f"{e.split()[0]}: plain .trivyignore entries cannot carry a "
+                                "statement; move it to .trivyignore.yaml")
+                  if not entries:
+                      print(f"  ok  {path} (no entries)")
+                  continue
+
+              try:
+                  doc = yaml.safe_load(open(path, encoding="utf-8"))
+              except yaml.YAMLError as e:
+                  err(path, f"not valid YAML: {e}")
+                  continue
+              if doc is None:
+                  print(f"  ok  {path} (no entries)")
+                  continue
+              if not isinstance(doc, dict):
+                  err(path, "must be a mapping of " + ", ".join(sorted(SECTIONS)))
+                  continue
+
+              count = 0
+              for section, entries in doc.items():
+                  if section not in SECTIONS:
+                      err(path, f"unknown section '{section}' (Trivy ignores it); "
+                                "expected one of " + ", ".join(sorted(SECTIONS)))
+                      continue
+                  if entries is None:
+                      continue
+                  if not isinstance(entries, list):
+                      err(path, f"{section} must be a list of entries")
+                      continue
+                  for i, entry in enumerate(entries):
+                      if not isinstance(entry, dict) or not str(entry.get("id") or "").strip():
+                          err(path, f"{section}[{i}]: entry has no id")
+                          continue
+                      count += 1
+                      rid = f"{section}/{entry['id']}"
+                      for k in entry:
+                          if k not in ENTRY_KEYS:
+                              hint = " (did you mean expired_at?)" if k in ALIASES else ""
+                              err(path, f"{rid}: unknown key '{k}', which Trivy ignores{hint}")
+                      statement = entry.get("statement")
+                      if not isinstance(statement, str) or len(statement.strip()) < 20:
+                          err(path, f"{rid}: statement must say why this is acceptable (20+ characters)")
+                      # Unquoted YAML dates load as datetime.date. Trivy rejects a
+                      # quoted one, so a string is an error here as well.
+                      expires = entry.get("expired_at")
+                      if type(expires) is not datetime.date:
+                          err(path, f"{rid}: expired_at must be a YYYY-MM-DD date (unquoted)")
+                      elif expires < today:
+                          err(path, f"{rid}: exception expired on {expires}")
+                      elif expires > horizon:
+                          err(path, f"{rid}: expired_at {expires} is more than "
+                                    f"{HORIZON_DAYS} days out ({horizon})")
+              print(f"  checked {path} ({count} entries)")
+
+          if failed:
+              print("\nEvery entry needs `statement:` (why the risk is accepted) and "
+                    f"`expired_at:` (YYYY-MM-DD, at most {HORIZON_DAYS} days out).")
+              print("See https://trivy.dev/latest/docs/configuration/filtering/#trivyignoreyaml")
+              sys.exit(1)
+          print("Trivy ignore entries are reasoned and time-boxed.")

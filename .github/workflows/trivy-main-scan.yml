@@ -14,8 +14,10 @@
 # `trivy-repo` category should delete that category's analyses so its old
 # alerts close.
 #
-# .trivyignore.yaml in the caller is honoured; Trivy stops applying an entry
-# after its `expired_at`.
+# A .trivyignore.yaml at the caller's root is passed to Trivy, which does not
+# load the YAML form on its own (only plain .trivyignore). Trivy stops applying
+# an entry after its `expired_at`; the org conformance check requires one on
+# every entry, at most 90 days out.
 #
 # Caller (one small file per repo):
 #   on:
@@ -57,6 +59,12 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - name: Find ignore file
+        id: ignore
+        run: |
+          if [ -f .trivyignore.yaml ]; then
+            echo "file=.trivyignore.yaml" >> "$GITHUB_OUTPUT"
+          fi
       - name: Trivy filesystem scan
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
@@ -66,6 +74,7 @@ jobs:
           format: sarif
           output: trivy-results.sarif
           skip-dirs: ${{ inputs.skip-dirs }}
+          trivyignores: ${{ steps.ignore.outputs.file }}
       # NOT continue-on-error: a failed upload means main silently stops
       # reporting, and the campaigns go quiet with it.
       - uses: github/codeql-action/upload-sarif@6f2ac81f5cd81fe351a197ba0b00d91d03cd2aee # v4.39.0

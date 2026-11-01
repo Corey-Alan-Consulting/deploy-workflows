@@ -61,7 +61,7 @@ on:
         description: 'Node version for test/security jobs'
         required: false
         type: string
-        default: '22'
+        default: '24'
       pre-test-command:
         description: 'Run after install, before lint (e.g. "pnpm db:generate"); empty skips'
         required: false

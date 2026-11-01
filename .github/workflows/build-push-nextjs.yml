@@ -23,7 +23,7 @@ on:
         description: "Node.js version"
         required: false
         type: string
-        default: "20"
+        default: "24"
       package_manager:
         description: "Package manager: pnpm, npm, or yarn"
         required: false

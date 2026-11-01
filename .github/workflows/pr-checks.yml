@@ -80,3 +80,16 @@ jobs:
       # Send-side renderer, upstreamed from capturly so every repo gets a
       # non-empty GitHub Release body rather than just that one.
       - run: node --test .github/actions/backfill-release-body/backfill.test.mjs
+
+  conformance-rules:
+    name: conformance rules
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # conformance.yml is read at @main by the org ruleset, so a broken rule
+      # blocks every PR in the fleet the moment it merges. Its scripts are run
+      # out of the workflow file against fixtures (runner python3 + PyYAML).
+      - run: python3 -m unittest discover -s tests -p '*_test.py' -v

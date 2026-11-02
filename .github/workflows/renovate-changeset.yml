@@ -127,13 +127,13 @@ jobs:
           fi
 
           file=".changeset/renovate-pr${PR_NUMBER}.md"
-          body=$(
-            echo '---'
-            printf '%s\n' "$FRONTMATTER"
-            echo '---'
-            echo
-            printf 'Dependency update: %s (#%s).\n' "$PR_TITLE" "$PR_NUMBER"
-          )
+          # Prettier-clean, so the file passes app-pr-checks' format check:
+          # the frontmatter's trailing newline (a `|` input) is stripped so no
+          # blank line precedes the closing ---, and the body is base64'd
+          # straight from printf because `$(...)` would drop the final newline.
+          frontmatter=$(printf '%s' "$FRONTMATTER")
+          contents=$(printf -- '---\n%s\n---\n\nDependency update: %s (#%s).\n' \
+            "$frontmatter" "$PR_TITLE" "$PR_NUMBER" | base64 | tr -d '\n')
 
           # From the API, not `git rev-parse origin/<base>`: checkout pinned a ref,
           # so a remote-tracking branch is not guaranteed to exist.
@@ -159,7 +159,7 @@ jobs:
             --arg branch "refs/heads/${branch}" \
             --arg oid "$base_sha" \
             --arg path "$file" \
-            --arg contents "$(printf '%s' "$body" | base64 | tr -d '\n')" \
+            --arg contents "$contents" \
             --arg headline "chore: changeset for Renovate PR #${PR_NUMBER}" \
             '{
               query: "mutation($input: CreateCommitOnBranchInput!){createCommitOnBranch(input:$input){commit{oid}}}",

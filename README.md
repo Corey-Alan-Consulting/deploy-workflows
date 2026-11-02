@@ -676,6 +676,29 @@ Per-brand wiring: a `sk_live_*` release key in Bitwarden
 (`release_key_secret_id`), `BWS_TOKEN_BUILD` + `BWS_TOKEN_PLATFORM`, and the
 brand's announce automation in `platform-infra`.
 
+## Reusable Workflow — app-pr-checks.yml
+
+The org's standard PR gate for app repos (conventional commit, lint,
+type-check, build, test, advisory audit, base-layer lint, gitleaks, CI-gates
+guard). The caller contract and every input are documented in the header of
+`.github/workflows/app-pr-checks.yml`.
+
+### Format check (opt-in, since v1.16.0)
+
+`format-check: true` adds a **Format check** step to Test & Quality, right
+after Lint, running `format-check-command` (default `pnpm format:check`, i.e.
+`prettier --check .` in every app repo). It is a step rather than a job so it
+costs no extra billed minute.
+
+```yaml
+    uses: Corey-Alan-Consulting/deploy-workflows/.github/workflows/app-pr-checks.yml@<sha> # v1.16.0
+    with:
+      format-check: true
+```
+
+Turn it on in the same PR that reformats the repo, and list that formatting
+commit in `.git-blame-ignore-revs` so `git blame` skips it.
+
 ## Org conformance
 
 `conformance.yml` runs as the required **Workflow conformance** check on app

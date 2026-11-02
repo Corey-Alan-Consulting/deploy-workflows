@@ -9,7 +9,7 @@
 # jobs (DB integration suites, a11y runs) in their own file.
 #
 # Gates carried here (standards/ci-cd.md):
-#   conventional-commit · lint/type-check/test · pnpm audit (advisory) ·
+#   conventional-commit · lint/format (opt-in)/type-check/test · pnpm audit (advisory) ·
 #   base-layer update lint · gitleaks PR-range secret scan · ci-gates guard
 #   (dependency review, the blocking PR security gate, runs org-wide as the
 #   ruleset-required security-gate.yml, not here)
@@ -48,6 +48,7 @@
 #       uses: Corey-Alan-Consulting/deploy-workflows/.github/workflows/app-pr-checks.yml@<sha> # vX.Y.Z
 #       with:
 #         pre-test-command: pnpm db:generate   # omit if no Prisma
+#         format-check: true                   # runs `pnpm format:check`
 #       secrets:
 #         npm-token: ${{ secrets.NPM_TOKEN }}
 # =============================================================================
@@ -75,6 +76,18 @@ on:
         required: false
         type: string
         default: 'pnpm type-check'
+      format-check:
+        description: >-
+          Opt in to a Prettier check in Test & Quality. Off by default so a
+          repo turns it on in the same PR that reformats it; until then CI
+          never ran it and formatting drifted silently on main.
+        required: false
+        type: boolean
+        default: false
+      format-check-command:
+        required: false
+        type: string
+        default: 'pnpm format:check'
       build-command:
         description: >-
           Production build, run on every PR. Empty string skips it for a repo
@@ -196,6 +209,12 @@ jobs:
         env:
           LINT: ${{ inputs.lint-command }}
         run: eval "$LINT"
+      # A step, not a job: a separate job is another billed minute per PR.
+      - name: Format check
+        if: inputs.format-check
+        env:
+          FORMAT_CHECK: ${{ inputs.format-check-command }}
+        run: eval "$FORMAT_CHECK"
       - name: Type check
         env:
           TYPE_CHECK: ${{ inputs.type-check-command }}

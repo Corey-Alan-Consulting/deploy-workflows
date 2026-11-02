@@ -6,8 +6,11 @@ name: Release
 # to main. It does ONE of two things per run:
 #   1. Pending .changeset/*.md exist -> open/update a "chore: release packages"
 #      PR that bumps versions, regenerates CHANGELOGs, and consumes changesets.
-#   2. That PR merged (no pending changesets) -> `changeset tag` writes versions
-#      + git tags, then each newly-tagged package is `npm publish`ed over OIDC.
+#   2. That PR merged (no pending changesets) -> `changeset tag` writes any
+#      missing git tags, then every non-private package whose COMMITTED version
+#      is not on npm is `npm publish`ed over OIDC, and GitHub Releases are cut
+#      for what landed. All of it is driven by state, not by what this run
+#      created, so a run that fails partway is fixed by re-running it.
 #
 # Why `changeset tag` + explicit `npm publish` (not `changeset publish`)?
 #   npm Trusted Publishing OIDC is documented for the npm CLI only; pnpm's OIDC
@@ -135,37 +138,22 @@ jobs:
           # changesets/action v2 renamed these inputs and hard-errors on the
           # old names — the dependabot v2 bump landed without this migration.
           version-script: pnpm version-packages
-          # `changeset tag` updates versions, consumes changesets, regenerates
-          # CHANGELOGs, and creates git tags but does NOT publish. action v2 no
-          # longer scrapes stdout for "New tag" lines — it injects
-          # CHANGESETS_OUTPUT into this script and reads the NDJSON that
-          # Changesets v3 writes there, exposing it as the `published-packages`
-          # output (v1 spelled it `publishedPackages`; v2 renamed every output
-          # to kebab-case while leaving `published` alone, which is why a stale
-          # name fails silently rather than failing the gate).
+          # `changeset tag` creates the git tags for every version not yet
+          # tagged and publishes nothing. Its `published-packages` output lists
+          # only tags NEW to this run, so nothing below reads it: on a re-run
+          # the tags already exist and the list is empty, which is exactly how
+          # a partial release used to become unrecoverable (2026-11-02).
           publish-script: pnpm exec changeset tag
           commit-message: 'chore: release packages'
           pr-title: 'chore: release packages'
-          # Pinned rather than inherited, because the defaults bite.
-          #
-          # v2 defaults `create-github-releases` to true, and its own docs say
-          # of `push-git-tags`: "If `create-github-releases` is set to `true`,
-          # this option will also always be `true`." So the action writes each
-          # tag ref TWICE — once creating the Release (the Releases API creates
-          # the tag) and once pushing tags. Every write is a `push` event, so an
-          # app whose deploy triggers on `push: tags` gets two identical deploy
-          # runs racing on one version. Concurrency is not a reliable backstop:
-          # the two writes land seconds apart and the runs can slip past group
-          # evaluation, which is how gatherbee@0.3.0 built twice.
-          #
-          # Where this workflow cuts the app's Release itself (below, with notes
-          # lifted from the package's CHANGELOG) the action must not also do it
-          # — that step was silently dead, always finding the Release already
-          # there. Library-only repos have no such step, so they keep the
-          # action's release creation and its harmless double tag write; nothing
-          # in those repos triggers on a tag. Generalising the step below to
-          # every published package would let this be an unconditional false.
-          create-github-releases: ${{ inputs.app-release-package == '' }}
+          # Always false: the "Create GitHub Releases" step below cuts them,
+          # after the publish and idempotently. The action's own creation runs
+          # BEFORE anything reaches npm and fails with `already_exists` on any
+          # re-run, so a package whose publish failed was left Released but
+          # unpublished and the retry could not get past this step. It also
+          # wrote each tag ref twice (Release + tag push), which double-fired
+          # `push: tags` deploys (gatherbee@0.3.0).
+          create-github-releases: false
           # Explicit because it is no longer implied once the above is false,
           # and because a release that pushes no tag is a release nothing can
           # deploy.
@@ -175,8 +163,94 @@ jobs:
           # a GITHUB_TOKEN env var that differs from it is a hard error.
           github-token: ${{ steps.app-token.outputs.token }}
 
+      # Everything from here to the parity check is driven by STATE (the
+      # version committed at GITHUB_SHA, the registry, the tags, the existing
+      # Releases), never by what this run happened to create. That is what
+      # makes a failed release recoverable by "Re-run jobs": each step redoes
+      # only what is still missing.
+      #
+      # Publish mode only. `has-changesets` is true in version-PR mode, where
+      # the tree holds the NEXT versions on the release branch.
+      - name: Plan npm publishes
+        id: plan
+        if: steps.changesets.outputs.has-changesets == 'false'
+        env:
+          # Read-only token, same as the install step. Publishing stays on OIDC.
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          set -euo pipefail
+          # One row per workspace package:
+          #   name  version  dir  tag  here  state  action
+          # here   = its tag points at GITHUB_SHA (this commit released it)
+          # state  = private | present | missing | unreadable (on npm)
+          # action = publish | none
+          plan="$RUNNER_TEMP/release-plan.tsv"
+          : > "$plan"
+          pnpm list -r --depth -1 --json > "$RUNNER_TEMP/release-pkgs.json"
+          total="$(jq 'length' "$RUNNER_TEMP/release-pkgs.json")"
+          count=0
+
+          while IFS=$'\t' read -r name dir; do
+            [ -n "$name" ] || continue
+            rel="${dir#"$GITHUB_WORKSPACE"}"
+            rel="${rel#/}"
+            # Only a version COMMITTED at the pushed ref is ever a candidate.
+            version="$(git show "${GITHUB_SHA}:${rel:+$rel/}package.json" 2>/dev/null \
+              | jq -r '.version // empty')" || version=""
+            if [ -z "$version" ]; then
+              echo "  skip        ${name}: no version committed at ${GITHUB_SHA}"
+              continue
+            fi
+
+            # Changesets tags a single-package (root) repo `v<version>`.
+            tag="${name}@${version}"
+            if ! git rev-parse -q --verify "refs/tags/${tag}" >/dev/null && [ "$total" = 1 ]; then
+              tag="v${version}"
+            fi
+            here=false
+            if [ "$(git rev-parse -q --verify "refs/tags/${tag}^{commit}" || true)" = "$GITHUB_SHA" ]; then
+              here=true
+            fi
+
+            action=none
+            if [ "$(jq -r '.private // false' "$dir/package.json")" = "true" ]; then
+              state=private
+            elif [ "$(npm view "${name}@${version}" version 2>/dev/null || true)" = "$version" ]; then
+              state=present
+            elif npm view "$name" name >/dev/null 2>&1; then
+              # Readable, and this version is not there: publish it, whether or
+              # not its tag is new.
+              state=missing
+              action=publish
+            else
+              # npm answers 404 for unauthorized exactly as for absent, so this
+              # cannot tell. Publish only on the commit that tagged it; a
+              # publish of a version that is already there is refused by npm
+              # and treated as done below.
+              state=unreadable
+              [ "$here" = true ] && action=publish
+            fi
+
+            if [ "$action" = publish ]; then
+              tree="$(jq -r '.version // empty' "$dir/package.json")"
+              if [ "$tree" != "$version" ]; then
+                echo "::error title=Version drift::${name} is ${version} at ${GITHUB_SHA} but ${tree} in the working tree. Refusing to publish a version that is not committed."
+                exit 1
+              fi
+              count=$((count + 1))
+            fi
+            at=""
+            [ "$here" = false ] || at=" at this commit"
+            echo "  ${action}  ${name}@${version} (${state}, tag ${tag}${at})"
+            printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+              "$name" "$version" "$dir" "$tag" "$here" "$state" "$action" >> "$plan"
+          done < <(jq -r '.[] | [.name, .path] | @tsv' "$RUNNER_TEMP/release-pkgs.json")
+
+          echo "publish-count=${count}" >> "$GITHUB_OUTPUT"
+          echo "${count} package(s) to publish."
+
       - name: Build library packages (topological)
-        if: steps.changesets.outputs.published == 'true'
+        if: steps.plan.outputs.publish-count != '0' && steps.plan.outputs.publish-count != ''
         # The publish loop below iterates in workspace-discovery (alphabetical)
         # order, NOT dependency order — a package whose workspace deps sort
         # after it (e.g. audit -> platform-kernel) needs those deps' dist/
@@ -195,38 +269,22 @@ jobs:
           fi
 
       - name: Publish changed packages to npm (OIDC)
-        if: steps.changesets.outputs.published == 'true'
-        env:
-          # Passed via env (not inlined) so the JSON can't break the shell.
-          PUBLISHED_PACKAGES: ${{ steps.changesets.outputs.published-packages }}
+        id: publish
+        if: steps.plan.outputs.publish-count != '0' && steps.plan.outputs.publish-count != ''
         run: |
           set -euo pipefail
-          # The action reported something published, so the package list must be
-          # non-empty. An empty list means the output contract drifted -- v2 renamed
-          # every output to kebab-case while leaving `published` alone, so a stale
-          # name leaves the gate green and the list blank. `jq -r '.[].name'` over
-          # empty input emits nothing and exits 0, so without this check the step
-          # reports success having published nothing at all. Fail loudly instead.
-          if [ -z "${PUBLISHED_PACKAGES:-}" ] \
-            || [ "$(printf '%s' "$PUBLISHED_PACKAGES" | jq -r 'length' 2>/dev/null || echo 0)" = "0" ]; then
-            echo "::error title=Empty published-packages::changesets reported published=true but the package list is empty. Refusing to report success without publishing. Verify this workflow reads the output name the pinned changesets/action actually emits."
-            exit 1
-          fi
-          # Map each published package name -> its workspace dir, then publish.
-          pnpm list -r --depth -1 --json > .pkg-paths.json
-          printf '%s' "$PUBLISHED_PACKAGES" | jq -r '.[].name' | while read -r name; do
-            dir="$(jq -r --arg n "$name" '.[] | select(.name == $n) | .path' .pkg-paths.json)"
-            if [ -z "$dir" ] || [ "$dir" = "null" ]; then
-              echo "::warning::No workspace dir for $name; skipping"
-              continue
-            fi
-            # Skip private packages: they get versioned/tagged (e.g. a deployable
-            # app's `app@<v>` tag) but must never be npm-published.
-            if [ "$(jq -r '.private // false' "$dir/package.json")" = "true" ]; then
-              echo "Skipping private package $name"
-              continue
-            fi
-            echo "Publishing $name from $dir"
+          # One failure must not strand the rest: publish every candidate,
+          # then fail the step naming the ones that did not land.
+          done_file="$RUNNER_TEMP/release-published.txt"
+          log="$RUNNER_TEMP/npm-publish.log"
+          tgz="$RUNNER_TEMP/publish-package.tgz"
+          : > "$done_file"
+          failed=""
+          while IFS=$'\t' read -r name version dir _tag _here _state action; do
+            [ "$action" = publish ] || continue
+            : > "$log"
+            rm -f "$tgz"
+            echo "::group::Publishing ${name}@${version} from ${dir}"
             # pnpm pack rewrites `workspace:^` dependency ranges to the real
             # versions in the tarball manifest — a bare `npm publish` ships
             # them verbatim, producing packages consumers cannot install. The
@@ -234,79 +292,102 @@ jobs:
             # Publishing path). Tarball publishes do not run prepublishOnly:
             # the explicit build+smoke step above replaces it in CI, while
             # prepublishOnly still guards manual publishes.
-            ( cd "$dir" && pnpm pack --out "$RUNNER_TEMP/publish-package.tgz" \
-              && npm publish "$RUNNER_TEMP/publish-package.tgz" --access restricted )
-          done
+            if ( cd "$dir" && pnpm pack --out "$tgz" ) \
+              && npm publish "$tgz" --access restricted 2>&1 | tee "$log"; then
+              echo "$name" >> "$done_file"
+            elif grep -qiE 'cannot publish over (the )?previously published version|EPUBLISHCONFLICT' "$log"; then
+              echo "${name}@${version} is already on the registry."
+              echo "$name" >> "$done_file"
+            else
+              failed="${failed} ${name}@${version}"
+            fi
+            echo "::endgroup::"
+          done < "$RUNNER_TEMP/release-plan.tsv"
 
-      # Optional: cut a GitHub Release for a deployable app package so the
-      # `release: published` event fires downstream. The app's git tag itself
-      # is created by `changeset tag` above;
-      # this only adds the GitHub Release object. Uses the App token so the
-      # published-release event is allowed to trigger other workflows.
-      - name: Create GitHub Release for app version
-        if: ${{ inputs.app-release-package != '' && steps.changesets.outputs.published == 'true' }}
-        env:
-          GH_TOKEN: ${{ steps.app-token.outputs.token }}
-          PUBLISHED_PACKAGES: ${{ steps.changesets.outputs.published-packages }}
-          APP_PACKAGE: ${{ inputs.app-release-package }}
-        run: |
-          set -euo pipefail
-          # The action reported something published, so the package list must be
-          # non-empty. An empty list means the output contract drifted -- v2 renamed
-          # every output to kebab-case while leaving `published` alone, so a stale
-          # name leaves the gate green and the list blank. `jq -r '.[].name'` over
-          # empty input emits nothing and exits 0, so without this check the step
-          # reports success having published nothing at all. Fail loudly instead.
-          if [ -z "${PUBLISHED_PACKAGES:-}" ] \
-            || [ "$(printf '%s' "$PUBLISHED_PACKAGES" | jq -r 'length' 2>/dev/null || echo 0)" = "0" ]; then
-            echo "::error title=Empty published-packages::changesets reported published=true but the package list is empty. The app release cannot be resolved from an empty list. This is a drifted output name, not 'nothing to release' -- the legitimate no-op case below needs a POPULATED list that simply lacks this app."
+          if [ -n "$failed" ]; then
+            echo "::error title=npm publish failed::Not published:${failed}. Everything else was published and released. Fix the cause (an npm 404 here usually means the package has no Trusted Publisher for this repo + release.yml) and re-run the job: it publishes only what is still missing from the registry."
             exit 1
           fi
-          version="$(printf '%s' "$PUBLISHED_PACKAGES" \
-            | jq -r --arg n "$APP_PACKAGE" '.[] | select(.name == $n) | .version')"
-          if [ -z "$version" ]; then
-            echo "App package $APP_PACKAGE not in published set; no app release to create."
-            exit 0
+
+      # Runs even when a publish failed, so the packages that DID land get
+      # their Release now; the failed ones are skipped and picked up on the
+      # re-run. Uses the App token so `release: published` can trigger other
+      # workflows. Never creates a tag (`--verify-tag`): the tag is pushed by
+      # the step above, and a second write of it would re-fire `push: tags`.
+      - name: Create GitHub Releases
+        if: ${{ !cancelled() && steps.plan.outcome == 'success' }}
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          APP_PACKAGE: ${{ inputs.app-release-package }}
+          PUBLISH_OUTCOME: ${{ steps.publish.outcome }}
+        run: |
+          set -euo pipefail
+          done_file="$RUNNER_TEMP/release-published.txt"
+          [ -f "$done_file" ] || : > "$done_file"
+          failed=""
+          while IFS=$'\t' read -r name version dir tag here state _action; do
+            # Only the commit that tagged a version releases it; a later push
+            # must not cut Releases for older versions.
+            [ "$here" = true ] || continue
+            if [ -n "$APP_PACKAGE" ]; then
+              # App repos: one Release, for the app. It fires the deploy and
+              # the announcement, so hold it until every publish has landed.
+              [ "$name" = "$APP_PACKAGE" ] || continue
+              if [ "$PUBLISH_OUTCOME" = failure ]; then
+                echo "::warning::Holding the ${tag} Release until the failed publish is fixed; the re-run creates it."
+                continue
+              fi
+            fi
+            case "$state" in
+              private | present) ;;
+              *)
+                if ! grep -qxF "$name" "$done_file"; then
+                  echo "Skipping ${tag}: not on the registry yet."
+                  continue
+                fi
+                ;;
+            esac
+            if gh release view "$tag" >/dev/null 2>&1; then
+              echo "Release ${tag} already exists."
+              continue
+            fi
+
+            # This version's CHANGELOG section (## <version> .. next ## ).
+            # Best-effort: a missing or empty changelog must not leave a
+            # published version with no Release. Fall back to a minimal note.
+            notes=""
+            if [ -f "${dir}/CHANGELOG.md" ]; then
+              notes="$(awk -v hdr="## ${version}" '
+                $0 == hdr { capture = 1; next }
+                /^## / && capture { exit }
+                capture { print }
+              ' "${dir}/CHANGELOG.md")"
+            else
+              echo "::warning::No CHANGELOG at ${dir}/CHANGELOG.md; using fallback release notes."
+            fi
+            [ -n "$notes" ] || notes="Release ${tag}"
+            notes_file="$(mktemp)"
+            printf '%s\n' "$notes" > "$notes_file"
+            pre=()
+            case "$version" in *-*) pre=(--prerelease) ;; esac
+            if gh release create "$tag" --verify-tag --title "$tag" --notes-file "$notes_file" ${pre[@]+"${pre[@]}"}; then
+              echo "Created Release ${tag}."
+            else
+              failed="${failed} ${tag}"
+            fi
+          done < "$RUNNER_TEMP/release-plan.tsv"
+
+          if [ -n "$failed" ]; then
+            echo "::error title=GitHub Release failed::Could not create:${failed}. Re-run the job; existing Releases are skipped."
+            exit 1
           fi
 
-          tag="${APP_PACKAGE}@${version}"
-          if gh release view "$tag" >/dev/null 2>&1; then
-            echo "Release ${tag} already exists; skipping."
-            exit 0
-          fi
-
-          # Resolve the app package's own CHANGELOG (changesets writes one per
-          # package dir, not just the repo root). .pkg-paths.json was written by
-          # the publish step above, which runs under the same `published` gate.
-          dir="$(jq -r --arg n "$APP_PACKAGE" '.[] | select(.name == $n) | .path' .pkg-paths.json)"
-          [ -n "$dir" ] && [ "$dir" != "null" ] || dir="."
-          changelog="${dir}/CHANGELOG.md"
-
-          # Extract this version's CHANGELOG section (## <version> .. next ## ).
-          # Best-effort: never hard-fail here — npm publish already ran, and a
-          # missing/empty changelog must not leave a published version with no
-          # GitHub Release. Fall back to a minimal note instead.
-          notes=""
-          if [ -f "$changelog" ]; then
-            notes="$(awk -v hdr="## ${version}" '
-              $0 == hdr { capture = 1; next }
-              /^## / && capture { exit }
-              capture { print }
-            ' "$changelog")"
-          else
-            echo "::warning::No CHANGELOG at ${changelog}; using fallback release notes."
-          fi
-          [ -n "$notes" ] || notes="Release ${tag}"
-
-          notes_file="$(mktemp)"
-          printf '%s\n' "$notes" > "$notes_file"
-          gh release create "$tag" --title "$tag" --notes-file "$notes_file"
-
-      # Post-condition for the whole workflow. Runs unconditionally, so it holds
-      # in both modes: after a publish it confirms the publish actually landed,
-      # and on a version-PR run it confirms nothing has silently fallen out of
-      # the registry.
+      # Post-condition for the whole workflow. Runs in both modes, and even
+      # after a failed step: after a publish it confirms the publish actually
+      # landed, and on a version-PR run it confirms nothing has silently
+      # fallen out of the registry.
       - name: Verify every package version reached the registry
+        if: ${{ !cancelled() }}
         env:
           # Read-only token, same as the install step. Publishing stays on OIDC.
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
@@ -328,11 +409,7 @@ jobs:
           # later published releases and referenced by nobody -- noise that would need an
           # allowlist and would train people to ignore this check. Current-version parity
           # is the invariant that actually matters and it has no known false positives.
-          #
-          # Runs unconditionally, so it holds in both workflow modes: after a publish it
-          # confirms the publish landed, and on a version-PR run it confirms nothing has
-          # silently fallen out of the registry.
-          pnpm list -r --depth -1 --json > .pkg-parity.json
+          pnpm list -r --depth -1 --json > "$RUNNER_TEMP/release-parity.json"
 
           missing=""
           unreadable=""
@@ -353,15 +430,16 @@ jobs:
             # reported every package as MISSING the first time a release PR was
             # pending for packages that already existed on npm (pos-platform,
             # 2026-10-22). The committed version is the one a consumer can resolve.
-            rel="${dir#"$GITHUB_WORKSPACE"/}"
-            if committed="$(git show "${GITHUB_SHA}:${rel}/package.json" 2>/dev/null | jq -r '.version')" \
+            rel="${dir#"$GITHUB_WORKSPACE"}"
+            rel="${rel#/}"
+            if committed="$(git show "${GITHUB_SHA}:${rel:+$rel/}package.json" 2>/dev/null | jq -r '.version')" \
               && [ -n "$committed" ] && [ "$committed" != "null" ]; then
               version="$committed"
             fi
             checked=$((checked + 1))
-            if npm view "${name}@${version}" version >/dev/null 2>&1; then
+            if [ "$(npm view "${name}@${version}" version 2>/dev/null || true)" = "$version" ]; then
               echo "  ok        ${name}@${version}"
-            elif npm view "$name" version >/dev/null 2>&1; then
+            elif npm view "$name" name >/dev/null 2>&1; then
               # The package is readable but this version is not there: a real hole.
               echo "  MISSING   ${name}@${version}"
               missing="${missing} ${name}@${version}"
@@ -372,22 +450,20 @@ jobs:
               echo "  UNREADABLE ${name} (cannot distinguish absent from unauthorized)"
               unreadable="${unreadable} ${name}"
             fi
-          done < <(jq -r '.[] | [.name, .version, .path] | @tsv' .pkg-parity.json)
-
-          rm -f .pkg-parity.json
+          done < <(jq -r '.[] | [.name, .version, .path] | @tsv' "$RUNNER_TEMP/release-parity.json")
 
           if [ -n "$unreadable" ]; then
             # WARN, never fail. Inability to verify is not evidence of a problem,
             # and a verification step must not be able to break a working
-            # release. `platform` omits the optional NPM_TOKEN secret, so its
-            # first run of this check reported all 11 packages unreadable and
-            # failed a release that had nothing to publish and was otherwise
-            # fine. npm answers 404 identically for unauthorized and absent, so
-            # the honest outcome here is "could not verify", not "broken".
+            # release. A repo that omits the optional NPM_TOKEN secret reported
+            # every package unreadable on its first run of this check and
+            # failed a release that had nothing to publish. npm answers 404
+            # identically for unauthorized and absent, so the honest outcome
+            # here is "could not verify", not "broken".
             echo "::warning title=Registry parity unverified::Could not read these packages from npm:${unreadable}. npm returns 404 for both 'unpublished' and 'unauthorized', so this is not evidence of a missing release -- it means parity could not be checked. Pass the optional NPM_TOKEN secret to this workflow to enable it."
           fi
           if [ -n "$missing" ]; then
-            echo "::error title=Version not on the registry::These versions exist in the repo but not on npm:${missing}. The release pipeline reported success without publishing them. Re-run the release; if the git tag already exists, delete the remote tag first so changeset tag re-creates it, because publish detection is driven by tag creation."
+            echo "::error title=Version not on the registry::These versions are committed but not on npm:${missing}. Publishing is driven by registry state, so re-running the release run for this commit (once nothing is pending in .changeset/) publishes exactly what is missing -- no tag or Release needs deleting."
             exit 1
           fi
           if [ -n "$unreadable" ]; then

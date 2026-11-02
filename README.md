@@ -346,6 +346,17 @@ One run either opens a "chore: release packages" version PR or, when that PR is
 merged, tags versions and publishes each changed package to npm over Trusted
 Publishing (OIDC — no `NPM_TOKEN`).
 
+**A release that fails partway is fixed by re-running it** — never by deleting
+tags or Releases. Publishing is driven by state, not by which tags the run
+created: every non-private package whose version committed at the run's SHA is
+missing from npm gets published, one failing package does not stop the rest,
+and GitHub Releases are cut by this workflow *after* the publish, skipping any
+that already exist (`changesets/action` no longer creates them). Fix the cause
+(e.g. a package with no Trusted Publisher answers `404` on publish), then
+**Re-run jobs** on the same run. If `NPM_TOKEN` is not passed, npm cannot tell
+"unpublished" from "unauthorised", so an unreadable package is only published
+on the commit that tagged it, and a version npm already has is treated as done.
+
 ```yaml
 # .github/workflows/release.yml  (in the package repo)
 name: Release
@@ -384,7 +395,7 @@ jobs:
 | Input | Default | Description |
 |-------|---------|-------------|
 | `node-version` | `24` | Node version (22+ required for npm OIDC) |
-| `app-release-package` | `''` | Optional workspace package (e.g. a private deployable app). When set and in the published set, cuts a GitHub Release `<name>@<version>` from `CHANGELOG.md` so a `release: published` workflow (e.g. release-email) fires |
+| `app-release-package` | `''` | Optional workspace package (e.g. a private deployable app). When set, only that package gets a GitHub Release (`<name>@<version>`, notes from its `CHANGELOG.md`, cut on the commit that tagged it and only once every npm publish has landed) so a `release: published` workflow (e.g. release-email) fires. Empty = every tagged package gets a Release |
 
 | Secret | Required | Description |
 |--------|----------|-------------|

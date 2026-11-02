@@ -542,7 +542,7 @@ jobs:
       # softening it — it just never ran here, because that workflow skips this
       # repo.
       - name: Upload SARIF results
-        uses: github/codeql-action/upload-sarif@6f2ac81f5cd81fe351a197ba0b00d91d03cd2aee # v4.39.0
+        uses: github/codeql-action/upload-sarif@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
         if: always() && hashFiles('trivy-results.sarif') != ''
         with:
           sarif_file: trivy-results.sarif
@@ -814,7 +814,7 @@ jobs:
           # Pin BuildKit instead of the floating buildx-stable-1 tag so the
           # builder boot is deterministic and not subject to surprise version
           # bumps or Docker Hub tag-resolution flakiness.
-          driver-opts: image=moby/buildkit:v0.33.0
+          driver-opts: image=moby/buildkit:v0.34.1
 
       - name: Determine tags
         id: tags
@@ -931,7 +931,7 @@ jobs:
           # Pin BuildKit instead of the floating buildx-stable-1 tag so the
           # builder boot is deterministic and not subject to surprise version
           # bumps or Docker Hub tag-resolution flakiness.
-          driver-opts: image=moby/buildkit:v0.33.0
+          driver-opts: image=moby/buildkit:v0.34.1
 
       - name: Determine tags
         id: tags
@@ -1101,7 +1101,7 @@ jobs:
       # Category must be unique per target or each upload overwrites the other's
       # findings in the Security tab.
       - name: Upload SARIF results
-        uses: github/codeql-action/upload-sarif@6f2ac81f5cd81fe351a197ba0b00d91d03cd2aee # v4.39.0
+        uses: github/codeql-action/upload-sarif@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
         if: always() && hashFiles('trivy-results.sarif') != ''
         with:
           sarif_file: trivy-results.sarif

@@ -100,15 +100,19 @@ const upsert = async (content, idempotencySuffix = '') => {
   return { status: res.status, body: await res.json().catch(() => ({})) };
 };
 
+// coreyalan's v1 API nests validation errors under `error.details.errors`;
+// the top-level `details` path is kept for any server that returns it flat.
+const validationErrors = (body) => body?.error?.details?.errors ?? body?.details?.errors;
+
 let result = await upsert(artifact);
-if (result.status === 400 && result.body?.details?.errors) {
+if (result.status === 400 && validationErrors(result.body)) {
   // Server-side schema is the hard gate; give the model its errors once.
   console.warn('Server rejected artifact, retrying editorial with feedback…');
   const retried = await editorial({
     ...anthropicAuth(),
     prompt:
       buildPrompt(promptArgs) +
-      `\n\nA previous attempt failed server validation with:\n${JSON.stringify(result.body.details.errors)}`,
+      `\n\nA previous attempt failed server validation with:\n${JSON.stringify(validationErrors(result.body))}`,
   });
   result = await upsert(retried, '-retry');
 }

@@ -1,16 +1,5 @@
 # Reusable Android release (signed AAB → Google Play track, keyless WIF).
-#
-# The caller keeps its `on: push: tags:` trigger and passes the config. This
-# workflow: install → build workspace deps → optional native prebuild (Expo
-# CNG) → restore Gradle cache → gradle bundleRelease (signed from a keystore
-# in Bitwarden) → 16KB-alignment gate → optional merged-manifest policy check
-# → upload AAB (and APK, when asked) → keyless Play upload (WIF; org policy
-# forbids SA keys).
-#
-# CONVENTION — signing-secret-ids must map to these canonical env NAMEs:
-#   ANDROID_KEYSTORE_BASE64 · ANDROID_KEYSTORE_PASSWORD
-#   ANDROID_KEY_ALIAS · ANDROID_KEY_PASSWORD
-# build-secret-ids (optional) e.g. SENTRY_AUTH_TOKEN for sourcemap upload.
+# Inputs, signing-secret NAMEs and examples: README "Reusable Workflows — mobile release".
 
 name: Android release
 
@@ -88,10 +77,21 @@ on:
         required: false
         type: string
         default: ''
-      merged-manifest-path:
+      expected-cert-sha256:
+        description: 'SHA-256 of the signing certificate (hex, colons and case ignored). When set, the AAB (and the APK, if apk-path is set) must be signed by exactly this certificate. Empty = skip the check.'
         required: false
         type: string
-        default: android/app/build/intermediates/merged_manifests/release/processReleaseManifest/AndroidManifest.xml
+        default: ''
+      signing-environment:
+        description: 'GitHub Environment (in the caller repo) for the build job, which reads the signing secrets. Its protection rules apply and its secrets resolve in the job. Empty = no environment.'
+        required: false
+        type: string
+        default: ''
+      merged-manifest-path:
+        description: 'Merged manifest path relative to app-directory. Empty = the single AndroidManifest.xml under android/app/build/intermediates/merged_manifests/release/.'
+        required: false
+        type: string
+        default: ''
       track:
         description: 'Play track to upload to'
         required: false
@@ -141,10 +141,24 @@ jobs:
     name: Build signed AAB
     runs-on: ${{ inputs.runner }}
     timeout-minutes: ${{ inputs.build-timeout-minutes }}
+    environment: ${{ inputs.signing-environment }}
     defaults:
       run:
         working-directory: ${{ inputs.app-directory }}
     steps:
+      # A secret passed by name that exists nowhere resolves to '' without an
+      # error; fail here, before any setup, rather than at Bitwarden.
+      - name: Check signing token is present
+        working-directory: .
+        shell: bash
+        env:
+          BWS_TOKEN_SIGNING: ${{ secrets.bws-token-signing }}
+        run: |
+          if [ -z "$BWS_TOKEN_SIGNING" ]; then
+            echo "::error::bws-token-signing is empty. Store BWS_TOKEN_SIGNING as a repo secret or a secret of signing-environment, and pass it by name."
+            exit 1
+          fi
+
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -287,8 +301,18 @@ jobs:
           cd android
           eval "$GRADLE_COMMAND"
 
+      - name: Verify signing certificate
+        if: ${{ inputs.expected-cert-sha256 != '' }}
+        # `$/` resolves to this repository at the commit already running, so a
+        # SHA-pinned caller runs the action from that same SHA.
+        uses: $/.github/actions/verify-signing-cert
+        with:
+          bundle: ${{ inputs.app-directory }}/${{ inputs.aab-path }}
+          apk: ${{ inputs.apk-path != '' && format('{0}/{1}', inputs.app-directory, inputs.apk-path) || '' }}
+          expected-sha256: ${{ inputs.expected-cert-sha256 }}
+
       - name: Verify 16KB page alignment
-        uses: Corey-Alan-Consulting/deploy-workflows/.github/actions/verify-aab-alignment@v1
+        uses: $/.github/actions/verify-aab-alignment
         with:
           bundle: ${{ inputs.app-directory }}/${{ inputs.aab-path }}
 
@@ -300,11 +324,30 @@ jobs:
           FORBIDDEN: ${{ inputs.forbidden-manifest-permissions }}
         run: |
           set -euo pipefail
-          if grep -E "$FORBIDDEN" "$MANIFEST"; then
-            echo "Policy-sensitive permission leaked into the merged manifest"
+          if [ -z "$MANIFEST" ]; then
+            dir=android/app/build/intermediates/merged_manifests/release
+            matches=()
+            if [ -d "$dir" ]; then
+              mapfile -t matches < <(find "$dir" -name AndroidManifest.xml -type f)
+            fi
+            if [ "${#matches[@]}" -ne 1 ]; then
+              echo "::error::expected one AndroidManifest.xml under ${dir}, found ${#matches[@]}; set merged-manifest-path"
+              [ "${#matches[@]}" -eq 0 ] || printf '%s\n' "${matches[@]}"
+              exit 1
+            fi
+            MANIFEST=${matches[0]}
+          elif [ ! -f "$MANIFEST" ]; then
+            echo "::error::merged manifest not found at ${MANIFEST}"
             exit 1
           fi
-          echo "merged manifest clean"
+          echo "checking ${MANIFEST}"
+          rc=0
+          grep -E "$FORBIDDEN" "$MANIFEST" || rc=$?
+          case "$rc" in
+            0) echo "::error::policy-sensitive permission leaked into the merged manifest"; exit 1 ;;
+            1) echo "merged manifest clean" ;;
+            *) echo "::error::grep failed (exit ${rc}) on ${MANIFEST}; check forbidden-manifest-permissions"; exit 1 ;;
+          esac
 
       - name: Upload AAB artifact
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -335,7 +378,7 @@ jobs:
 
       - name: Publish AAB to Google Play
         if: ${{ inputs.publish }}
-        uses: Corey-Alan-Consulting/deploy-workflows/.github/actions/play-publish@v1
+        uses: $/.github/actions/play-publish
         with:
           mode: upload
           package: ${{ inputs.package-name }}

@@ -27,5 +27,11 @@ if [ -n "${APK:-}" ]; then
   apksigner=$(find "$tools" -name apksigner -type f | sort -V | tail -n 1)
   [ -n "$apksigner" ] || fail "apksigner not found under $tools"
   out=$("$apksigner" verify --print-certs "$APK") || fail "apksigner rejected $APK"
-  check APK "$(sed -n 's/^Signer #[0-9]* certificate SHA-256 digest: //p' <<< "$out" | norm)"
+  # The signer label varies by build-tools: "Signer #1 certificate ..." (36),
+  # "V2 Signer: certificate ..." (37), "Signer (minSdkVersion=..) ..." (v3.1).
+  # Source-stamp and lineage certificates are not APK signers.
+  digests=$(sed -nE '/[Ss]tamp|[Ll]ineage/d; s/^.*[Ss]igner.* certificate SHA-256 digest: //p' <<< "$out" | norm)
+  # apksigner output holds only certificate names and digests.
+  [ -n "$digests" ] || { printf '%s\n' "$out"; fail "APK has no signing certificate"; }
+  check APK "$digests"
 fi

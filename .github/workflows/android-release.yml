@@ -242,9 +242,10 @@ jobs:
       # what a cold release spends most of its download time on, and they are
       # safe to share across builds. Caches are written on the default branch
       # by any run there and read by tag and dispatch runs too.
-      - name: Cache Gradle
+      - name: Restore Gradle cache
+        id: gradle-cache
         if: ${{ inputs.gradle-cache }}
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             ~/.gradle/caches
@@ -293,6 +294,7 @@ jobs:
       # Gradle reads ANDROID_KEYSTORE_PATH / *_PASSWORD / KEY_ALIAS from the env
       # (inherited); SENTRY_AUTH_TOKEN too if build-secret-ids provided it.
       - name: Build release bundle
+        id: gradle
         shell: bash
         env:
           GRADLE_COMMAND: ${{ inputs.gradle-command }}
@@ -300,6 +302,17 @@ jobs:
           set -euo pipefail
           cd android
           eval "$GRADLE_COMMAND"
+
+      # Saved once Gradle succeeds, even if a later check fails, so a re-run
+      # doesn't download every dependency again.
+      - name: Save Gradle cache
+        if: ${{ always() && inputs.gradle-cache && steps.gradle.outcome == 'success' && steps.gradle-cache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: ${{ steps.gradle-cache.outputs.cache-primary-key }}
 
       - name: Verify signing certificate
         if: ${{ inputs.expected-cert-sha256 != '' }}

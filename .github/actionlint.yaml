@@ -14,3 +14,6 @@ paths:
   .github/workflows/release-announce-send.yml:
     ignore:
       - 'specifying action "\$/[^"]*" in invalid format because ref is missing'
+  .github/workflows/android-release.yml:
+    ignore:
+      - 'specifying action "\$/[^"]*" in invalid format because ref is missing'

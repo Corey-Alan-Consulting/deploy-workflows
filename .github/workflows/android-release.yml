@@ -3,14 +3,21 @@
 # The caller keeps its `on: push: tags:` trigger and passes the config. This
 # workflow: install → build workspace deps → optional native prebuild (Expo
 # CNG) → restore Gradle cache → gradle bundleRelease (signed from a keystore
-# in Bitwarden) → 16KB-alignment gate → optional merged-manifest policy check
-# → upload AAB (and APK, when asked) → keyless Play upload (WIF; org policy
-# forbids SA keys).
+# in Bitwarden) → 16KB-alignment gate → optional signing-cert pin → optional
+# merged-manifest policy check → upload AAB (and APK, when asked) → keyless
+# Play upload (WIF; org policy forbids SA keys).
 #
 # CONVENTION — signing-secret-ids must map to these canonical env NAMEs:
 #   ANDROID_KEYSTORE_BASE64 · ANDROID_KEYSTORE_PASSWORD
 #   ANDROID_KEY_ALIAS · ANDROID_KEY_PASSWORD
 # build-secret-ids (optional) e.g. SENTRY_AUTH_TOKEN for sourcemap upload.
+#
+# environment (optional) runs the build job in a GitHub Environment of the
+# caller repo, so its protection rules gate the signing key. Store
+# BWS_TOKEN_SIGNING as an environment secret and pass it by name
+# (`bws-token-signing: ${{ secrets.BWS_TOKEN_SIGNING }}`): the caller job has
+# no environment, but the called job does, and it resolves the environment
+# secret's value.
 
 name: Android release
 
@@ -88,6 +95,16 @@ on:
         required: false
         type: string
         default: ''
+      expected-cert-sha256:
+        description: 'SHA-256 of the signing certificate (hex, colons and case ignored). When set, the AAB (and the APK, if apk-path is set) must be signed by exactly this certificate. Empty = skip the check.'
+        required: false
+        type: string
+        default: ''
+      environment:
+        description: 'GitHub Environment (in the caller repo) for the build job, which reads the signing secrets. Its protection rules apply and its secrets resolve in the job. Empty = no environment.'
+        required: false
+        type: string
+        default: ''
       merged-manifest-path:
         required: false
         type: string
@@ -141,6 +158,9 @@ jobs:
     name: Build signed AAB
     runs-on: ${{ inputs.runner }}
     timeout-minutes: ${{ inputs.build-timeout-minutes }}
+    # An empty name means no environment, so callers that don't set it are
+    # unchanged.
+    environment: ${{ inputs.environment }}
     defaults:
       run:
         working-directory: ${{ inputs.app-directory }}
@@ -253,6 +273,20 @@ jobs:
           # exits 1 on it. Gradle installs build-tools/platforms itself.
           packages: platform-tools
 
+      # A secret passed by name that exists nowhere (e.g. set on the wrong
+      # environment) resolves to an empty string without an error. Fail with a
+      # clear message instead of an opaque Bitwarden auth error.
+      - name: Check signing token is present
+        shell: bash
+        env:
+          BWS_TOKEN_SIGNING: ${{ secrets.bws-token-signing }}
+          ENVIRONMENT: ${{ inputs.environment }}
+        run: |
+          if [ -z "$BWS_TOKEN_SIGNING" ]; then
+            echo "::error::bws-token-signing is empty. Store BWS_TOKEN_SIGNING as a repo secret, or as a secret of environment '${ENVIRONMENT:-<none>}', and pass it by name."
+            exit 1
+          fi
+
       - name: Load signing secrets
         uses: bitwarden/sm-action@1238aae8fc64b212641190a9227c8a734ab1a793 # v3.0.1
         with:
@@ -288,9 +322,62 @@ jobs:
           eval "$GRADLE_COMMAND"
 
       - name: Verify 16KB page alignment
-        uses: Corey-Alan-Consulting/deploy-workflows/.github/actions/verify-aab-alignment@v1
+        # `$/` resolves to this repository at the commit already running, so a
+        # SHA-pinned caller runs the action from that same SHA.
+        uses: $/.github/actions/verify-aab-alignment
         with:
           bundle: ${{ inputs.app-directory }}/${{ inputs.aab-path }}
+
+      # Proves the artifact was signed with the expected release key, not a
+      # debug or stray key. The AAB is JAR-signed (keytool reads its certs);
+      # the APK uses the APK signature scheme (apksigner --print-certs also
+      # verifies it; taken from the newest build-tools Gradle installed).
+      # Every signer must match, and there must be at least one.
+      - name: Verify signing certificate
+        if: ${{ inputs.expected-cert-sha256 != '' }}
+        shell: bash
+        env:
+          EXPECTED: ${{ inputs.expected-cert-sha256 }}
+          AAB: ${{ inputs.aab-path }}
+          APK: ${{ inputs.apk-path }}
+        run: |
+          set -euo pipefail
+          want=$(printf '%s' "$EXPECTED" | tr -d ':[:space:]' | tr '[:upper:]' '[:lower:]')
+          if ! printf '%s' "$want" | grep -Eq '^[0-9a-f]{64}$'; then
+            echo "::error::expected-cert-sha256 is not a SHA-256 digest"
+            exit 1
+          fi
+          check() { # label, newline-separated digests
+            local label=$1 digests=$2 n=0 d
+            while IFS= read -r d; do
+              [ -n "$d" ] || continue
+              n=$((n + 1))
+              if [ "$d" != "$want" ]; then
+                echo "::error::${label} is signed by certificate ${d}, expected ${want}"
+                exit 1
+              fi
+            done <<< "$digests"
+            if [ "$n" -eq 0 ]; then
+              echo "::error::${label} has no signing certificate"
+              exit 1
+            fi
+            echo "${label}: ${n} certificate(s), all match"
+          }
+          aab_digests=$(keytool -printcert -jarfile "$AAB" \
+            | sed -n 's/^[[:space:]]*SHA256:[[:space:]]*//p' \
+            | tr -d ':' | tr '[:upper:]' '[:lower:]')
+          check AAB "$aab_digests"
+          if [ -n "$APK" ]; then
+            apksigner=$(find "$ANDROID_HOME/build-tools" -name apksigner -type f | sort -V | tail -n 1)
+            if [ -z "$apksigner" ]; then
+              echo "::error::apksigner not found under $ANDROID_HOME/build-tools"
+              exit 1
+            fi
+            apk_digests=$("$apksigner" verify --print-certs "$APK" \
+              | sed -n 's/^Signer #[0-9]* certificate SHA-256 digest: //p' \
+              | tr '[:upper:]' '[:lower:]')
+            check APK "$apk_digests"
+          fi
 
       - name: Verify merged manifest is policy-clean
         if: ${{ inputs.forbidden-manifest-permissions != '' }}
@@ -335,7 +422,7 @@ jobs:
 
       - name: Publish AAB to Google Play
         if: ${{ inputs.publish }}
-        uses: Corey-Alan-Consulting/deploy-workflows/.github/actions/play-publish@v1
+        uses: $/.github/actions/play-publish
         with:
           mode: upload
           package: ${{ inputs.package-name }}

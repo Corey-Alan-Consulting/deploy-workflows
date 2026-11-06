@@ -1,0 +1,28 @@
+name: Verify signing certificate
+description: >
+  Fail unless every certificate on an AAB (and, optionally, every signer of an
+  APK) matches a pinned SHA-256. Needs keytool (setup-java) and, for an APK,
+  apksigner under $ANDROID_HOME/build-tools.
+
+inputs:
+  bundle:
+    description: 'Path to the .aab to check'
+    required: true
+  apk:
+    description: 'Path to an .apk to check as well. Empty = skip.'
+    required: false
+    default: ''
+  expected-sha256:
+    description: 'Certificate SHA-256 (hex; colons and case ignored)'
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Check signing certificate
+      shell: bash
+      env:
+        BUNDLE: ${{ inputs.bundle }}
+        APK: ${{ inputs.apk }}
+        EXPECTED: ${{ inputs.expected-sha256 }}
+      run: bash "$GITHUB_ACTION_PATH/verify-signing-cert.sh"

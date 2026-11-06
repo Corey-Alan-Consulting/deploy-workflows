@@ -218,12 +218,11 @@ with every caller's secrets and cloud identity on their next release.
 - **Callers:** pin `uses:` to the release commit SHA with a version comment
   (`@<sha> # v1.0.0`). Renovate bumps the pin when a new tag is cut.
 - **Inside this repo:** the reusable workflows reference the composite
-  actions either as `$/.github/actions/<name>` (GitHub's self-repository
-  syntax, which resolves to the commit already running, so a caller's SHA pin
-  covers the action too; used by `release-announce*` and `android-release`)
-  or, in older workflows, at `@v1` (the major tag is moved atomically at
-  release). Prefer `$/` for new references; actionlint needs a per-file
-  suppression for it in `.github/actionlint.yaml` until it supports the syntax.
+  actions as `$/.github/actions/<name>` (GitHub's self-repository syntax,
+  which resolves to the commit already running, so a caller's SHA pin covers
+  the action too) or, in older workflows, at `@v1` (the major tag is moved
+  atomically at release). Prefer `$/` for new references; actionlint needs a
+  per-file suppression for it in `.github/actionlint.yaml`.
 
 Cutting a release from `main`:
 
@@ -599,23 +598,23 @@ release with the debug key.
 
 **Signing-key gate.** Two optional inputs harden the signing step:
 
-- `environment` runs the build job in a GitHub Environment of the caller repo
-  (empty = none, the default). The environment's protection rules (required
-  reviewers, deployment branch/tag policy) then gate every use of the signing
-  key. The caller job can't set `environment` itself, so store
-  `BWS_TOKEN_SIGNING` as a secret **of that environment** (and delete the repo
-  secret) and pass it by name as below. The caller job sees no value, but the
-  called job sets the environment and receives the environment secret's value.
-  A secret that exists nowhere resolves to an empty string, which the workflow
-  rejects before loading secrets.
+- `signing-environment` runs the build job in a GitHub Environment of the
+  caller repo, so its protection rules gate the signing key. Store
+  `BWS_TOKEN_SIGNING` as a secret of that environment and pass it by name, as
+  below: the called job sets the environment and resolves its value.
 - `expected-cert-sha256` pins the signing certificate's SHA-256 (hex; colons
   and case are ignored). The AAB's certificates (`keytool -printcert -jarfile`)
   and, when `apk-path` is set, the APK's signers (`apksigner verify
   --print-certs`) must all match, or the job fails before anything is uploaded.
 
+`forbidden-manifest-permissions` checks `merged-manifest-path` (relative to
+`app-directory`). Empty, the default, uses the one `AndroidManifest.xml` under
+`android/app/build/intermediates/merged_manifests/release/` and fails unless
+there is exactly one.
+
 ```yaml
     with:
-      environment: android-signing
+      signing-environment: android-signing
       expected-cert-sha256: '15:2F:BD:…:0C:5A'
     secrets:
       bws-token-signing: ${{ secrets.BWS_TOKEN_SIGNING }} # environment secret

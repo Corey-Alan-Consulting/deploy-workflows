@@ -1,23 +1,5 @@
 # Reusable Android release (signed AAB → Google Play track, keyless WIF).
-#
-# The caller keeps its `on: push: tags:` trigger and passes the config. This
-# workflow: install → build workspace deps → optional native prebuild (Expo
-# CNG) → restore Gradle cache → gradle bundleRelease (signed from a keystore
-# in Bitwarden) → 16KB-alignment gate → optional signing-cert pin → optional
-# merged-manifest policy check → upload AAB (and APK, when asked) → keyless
-# Play upload (WIF; org policy forbids SA keys).
-#
-# CONVENTION — signing-secret-ids must map to these canonical env NAMEs:
-#   ANDROID_KEYSTORE_BASE64 · ANDROID_KEYSTORE_PASSWORD
-#   ANDROID_KEY_ALIAS · ANDROID_KEY_PASSWORD
-# build-secret-ids (optional) e.g. SENTRY_AUTH_TOKEN for sourcemap upload.
-#
-# environment (optional) runs the build job in a GitHub Environment of the
-# caller repo, so its protection rules gate the signing key. Store
-# BWS_TOKEN_SIGNING as an environment secret and pass it by name
-# (`bws-token-signing: ${{ secrets.BWS_TOKEN_SIGNING }}`): the caller job has
-# no environment, but the called job does, and it resolves the environment
-# secret's value.
+# Inputs, signing-secret NAMEs and examples: README "Reusable Workflows — mobile release".
 
 name: Android release
 
@@ -100,15 +82,16 @@ on:
         required: false
         type: string
         default: ''
-      environment:
+      signing-environment:
         description: 'GitHub Environment (in the caller repo) for the build job, which reads the signing secrets. Its protection rules apply and its secrets resolve in the job. Empty = no environment.'
         required: false
         type: string
         default: ''
       merged-manifest-path:
+        description: 'Merged manifest path relative to app-directory. Empty = the single AndroidManifest.xml under android/app/build/intermediates/merged_manifests/release/.'
         required: false
         type: string
-        default: android/app/build/intermediates/merged_manifests/release/processReleaseManifest/AndroidManifest.xml
+        default: ''
       track:
         description: 'Play track to upload to'
         required: false
@@ -158,13 +141,24 @@ jobs:
     name: Build signed AAB
     runs-on: ${{ inputs.runner }}
     timeout-minutes: ${{ inputs.build-timeout-minutes }}
-    # An empty name means no environment, so callers that don't set it are
-    # unchanged.
-    environment: ${{ inputs.environment }}
+    environment: ${{ inputs.signing-environment }}
     defaults:
       run:
         working-directory: ${{ inputs.app-directory }}
     steps:
+      # A secret passed by name that exists nowhere resolves to '' without an
+      # error; fail here, before any setup, rather than at Bitwarden.
+      - name: Check signing token is present
+        working-directory: .
+        shell: bash
+        env:
+          BWS_TOKEN_SIGNING: ${{ secrets.bws-token-signing }}
+        run: |
+          if [ -z "$BWS_TOKEN_SIGNING" ]; then
+            echo "::error::bws-token-signing is empty. Store BWS_TOKEN_SIGNING as a repo secret or a secret of signing-environment, and pass it by name."
+            exit 1
+          fi
+
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -273,20 +267,6 @@ jobs:
           # exits 1 on it. Gradle installs build-tools/platforms itself.
           packages: platform-tools
 
-      # A secret passed by name that exists nowhere (e.g. set on the wrong
-      # environment) resolves to an empty string without an error. Fail with a
-      # clear message instead of an opaque Bitwarden auth error.
-      - name: Check signing token is present
-        shell: bash
-        env:
-          BWS_TOKEN_SIGNING: ${{ secrets.bws-token-signing }}
-          ENVIRONMENT: ${{ inputs.environment }}
-        run: |
-          if [ -z "$BWS_TOKEN_SIGNING" ]; then
-            echo "::error::bws-token-signing is empty. Store BWS_TOKEN_SIGNING as a repo secret, or as a secret of environment '${ENVIRONMENT:-<none>}', and pass it by name."
-            exit 1
-          fi
-
       - name: Load signing secrets
         uses: bitwarden/sm-action@1238aae8fc64b212641190a9227c8a734ab1a793 # v3.0.1
         with:
@@ -321,106 +301,53 @@ jobs:
           cd android
           eval "$GRADLE_COMMAND"
 
-      - name: Verify 16KB page alignment
+      - name: Verify signing certificate
+        if: ${{ inputs.expected-cert-sha256 != '' }}
         # `$/` resolves to this repository at the commit already running, so a
         # SHA-pinned caller runs the action from that same SHA.
+        uses: $/.github/actions/verify-signing-cert
+        with:
+          bundle: ${{ inputs.app-directory }}/${{ inputs.aab-path }}
+          apk: ${{ inputs.apk-path != '' && format('{0}/{1}', inputs.app-directory, inputs.apk-path) || '' }}
+          expected-sha256: ${{ inputs.expected-cert-sha256 }}
+
+      - name: Verify 16KB page alignment
         uses: $/.github/actions/verify-aab-alignment
         with:
           bundle: ${{ inputs.app-directory }}/${{ inputs.aab-path }}
 
-      # Proves the artifact was signed with the expected release key, not a
-      # debug or stray key. The AAB is JAR-signed (keytool reads its certs);
-      # the APK uses the APK signature scheme (apksigner --print-certs also
-      # verifies it; taken from the newest build-tools Gradle installed).
-      # Every signer must match, and there must be at least one.
-      - name: Verify signing certificate
-        if: ${{ inputs.expected-cert-sha256 != '' }}
-        shell: bash
-        env:
-          EXPECTED: ${{ inputs.expected-cert-sha256 }}
-          AAB: ${{ inputs.aab-path }}
-          APK: ${{ inputs.apk-path }}
-        run: |
-          set -euo pipefail
-          want=$(printf '%s' "$EXPECTED" | tr -d ':[:space:]' | tr '[:upper:]' '[:lower:]')
-          if ! printf '%s' "$want" | grep -Eq '^[0-9a-f]{64}$'; then
-            echo "::error::expected-cert-sha256 is not a SHA-256 digest"
-            exit 1
-          fi
-          check() { # label, newline-separated digests
-            local label=$1 digests=$2 n=0 d
-            while IFS= read -r d; do
-              [ -n "$d" ] || continue
-              n=$((n + 1))
-              if [ "$d" != "$want" ]; then
-                echo "::error::${label} is signed by certificate ${d}, expected ${want}"
-                exit 1
-              fi
-            done <<< "$digests"
-            if [ "$n" -eq 0 ]; then
-              echo "::error::${label} has no signing certificate"
-              exit 1
-            fi
-            echo "${label}: ${n} certificate(s), all match"
-          }
-          aab_digests=$(keytool -printcert -jarfile "$AAB" \
-            | sed -n 's/^[[:space:]]*SHA256:[[:space:]]*//p' \
-            | tr -d ':' | tr '[:upper:]' '[:lower:]')
-          check AAB "$aab_digests"
-          if [ -n "$APK" ]; then
-            apksigner=$(find "$ANDROID_HOME/build-tools" -name apksigner -type f | sort -V | tail -n 1)
-            if [ -z "$apksigner" ]; then
-              echo "::error::apksigner not found under $ANDROID_HOME/build-tools"
-              exit 1
-            fi
-            apk_digests=$("$apksigner" verify --print-certs "$APK" \
-              | sed -n 's/^Signer #[0-9]* certificate SHA-256 digest: //p' \
-              | tr '[:upper:]' '[:lower:]')
-            check APK "$apk_digests"
-          fi
-
       - name: Verify merged manifest is policy-clean
         if: ${{ inputs.forbidden-manifest-permissions != '' }}
         shell: bash
-        # A missing manifest or a grep error must fail, never read as clean.
-        # The default path is the AGP 8 layout; if it is absent (another AGP
-        # version), use the single AndroidManifest.xml under the release
-        # merged_manifests dir. A custom path must exist as given.
         env:
           MANIFEST: ${{ inputs.merged-manifest-path }}
           FORBIDDEN: ${{ inputs.forbidden-manifest-permissions }}
-          DEFAULT_MANIFEST: android/app/build/intermediates/merged_manifests/release/processReleaseManifest/AndroidManifest.xml
         run: |
           set -euo pipefail
-          if [ ! -f "$MANIFEST" ]; then
-            if [ "$MANIFEST" != "$DEFAULT_MANIFEST" ]; then
-              echo "::error::merged manifest not found at ${MANIFEST}"
-              exit 1
-            fi
+          if [ -z "$MANIFEST" ]; then
             dir=android/app/build/intermediates/merged_manifests/release
             matches=()
             if [ -d "$dir" ]; then
               mapfile -t matches < <(find "$dir" -name AndroidManifest.xml -type f)
             fi
             if [ "${#matches[@]}" -ne 1 ]; then
-              echo "::error::expected one merged release manifest under ${dir}, found ${#matches[@]}; set merged-manifest-path"
+              echo "::error::expected one AndroidManifest.xml under ${dir}, found ${#matches[@]}; set merged-manifest-path"
               [ "${#matches[@]}" -eq 0 ] || printf '%s\n' "${matches[@]}"
               exit 1
             fi
             MANIFEST=${matches[0]}
+          elif [ ! -f "$MANIFEST" ]; then
+            echo "::error::merged manifest not found at ${MANIFEST}"
+            exit 1
           fi
           echo "checking ${MANIFEST}"
           rc=0
           grep -E "$FORBIDDEN" "$MANIFEST" || rc=$?
-          if [ "$rc" -eq 0 ]; then
-            echo "::error::policy-sensitive permission leaked into the merged manifest"
-            exit 1
-          fi
-          if [ "$rc" -ge 2 ]; then
-            echo "::error::grep failed (exit ${rc}) reading ${MANIFEST}; check forbidden-manifest-permissions"
-            exit 1
-          fi
-          echo "merged manifest clean"
+          case "$rc" in
+            0) echo "::error::policy-sensitive permission leaked into the merged manifest"; exit 1 ;;
+            1) echo "merged manifest clean" ;;
+            *) echo "::error::grep failed (exit ${rc}) on ${MANIFEST}; check forbidden-manifest-permissions"; exit 1 ;;
+          esac
 
       - name: Upload AAB artifact
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2

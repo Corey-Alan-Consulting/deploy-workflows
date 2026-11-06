@@ -382,13 +382,42 @@ jobs:
       - name: Verify merged manifest is policy-clean
         if: ${{ inputs.forbidden-manifest-permissions != '' }}
         shell: bash
+        # A missing manifest or a grep error must fail, never read as clean.
+        # The default path is the AGP 8 layout; if it is absent (another AGP
+        # version), use the single AndroidManifest.xml under the release
+        # merged_manifests dir. A custom path must exist as given.
         env:
           MANIFEST: ${{ inputs.merged-manifest-path }}
           FORBIDDEN: ${{ inputs.forbidden-manifest-permissions }}
+          DEFAULT_MANIFEST: android/app/build/intermediates/merged_manifests/release/processReleaseManifest/AndroidManifest.xml
         run: |
           set -euo pipefail
-          if grep -E "$FORBIDDEN" "$MANIFEST"; then
-            echo "Policy-sensitive permission leaked into the merged manifest"
+          if [ ! -f "$MANIFEST" ]; then
+            if [ "$MANIFEST" != "$DEFAULT_MANIFEST" ]; then
+              echo "::error::merged manifest not found at ${MANIFEST}"
+              exit 1
+            fi
+            dir=android/app/build/intermediates/merged_manifests/release
+            matches=()
+            if [ -d "$dir" ]; then
+              mapfile -t matches < <(find "$dir" -name AndroidManifest.xml -type f)
+            fi
+            if [ "${#matches[@]}" -ne 1 ]; then
+              echo "::error::expected one merged release manifest under ${dir}, found ${#matches[@]}; set merged-manifest-path"
+              [ "${#matches[@]}" -eq 0 ] || printf '%s\n' "${matches[@]}"
+              exit 1
+            fi
+            MANIFEST=${matches[0]}
+          fi
+          echo "checking ${MANIFEST}"
+          rc=0
+          grep -E "$FORBIDDEN" "$MANIFEST" || rc=$?
+          if [ "$rc" -eq 0 ]; then
+            echo "::error::policy-sensitive permission leaked into the merged manifest"
+            exit 1
+          fi
+          if [ "$rc" -ge 2 ]; then
+            echo "::error::grep failed (exit ${rc}) reading ${MANIFEST}; check forbidden-manifest-permissions"
             exit 1
           fi
           echo "merged manifest clean"

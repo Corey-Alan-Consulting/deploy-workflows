@@ -1,9 +1,11 @@
 # Reusable Android release (signed AAB → Google Play track, keyless WIF).
 #
 # The caller keeps its `on: push: tags:` trigger and passes the config. This
-# workflow: install → build workspace deps → gradle bundleRelease (signed from a
-# keystore in Bitwarden) → 16KB-alignment gate → optional merged-manifest policy
-# check → upload AAB → keyless Play upload (WIF; org policy forbids SA keys).
+# workflow: install → build workspace deps → optional native prebuild (Expo
+# CNG) → restore Gradle cache → gradle bundleRelease (signed from a keystore
+# in Bitwarden) → 16KB-alignment gate → optional merged-manifest policy check
+# → upload AAB (and APK, when asked) → keyless Play upload (WIF; org policy
+# forbids SA keys).
 #
 # CONVENTION — signing-secret-ids must map to these canonical env NAMEs:
 #   ANDROID_KEYSTORE_BASE64 · ANDROID_KEYSTORE_PASSWORD
@@ -57,10 +59,25 @@ on:
         required: false
         type: string
         default: ''
+      prebuild-command:
+        description: 'Generates the native android/ project before Gradle, run in app-directory (Expo CNG, e.g. "pnpm exec expo prebuild -p android --clean --no-install"). Empty = the app commits android/.'
+        required: false
+        type: string
+        default: ''
+      gradle-cache:
+        description: 'Cache ~/.gradle (dependencies and wrapper) keyed on the lockfile. A tag or dispatch run restores the default branch''s cache.'
+        required: false
+        type: boolean
+        default: true
       gradle-command:
         required: false
         type: string
         default: './gradlew bundleRelease --no-daemon'
+      apk-path:
+        description: 'Signed APK path relative to app-directory, uploaded as an artifact for sideloading (add assembleRelease to gradle-command). Empty = no APK.'
+        required: false
+        type: string
+        default: ''
       aab-path:
         description: 'AAB path relative to app-directory'
         required: false
@@ -194,6 +211,34 @@ jobs:
           FILTER: ${{ inputs.workspace-build-filter }}
         run: pnpm --filter "$FILTER" --if-present build
 
+      # Expo continuous native generation: android/ is not committed, so the
+      # native project is generated from app.config before Gradle runs. Env
+      # from the earlier steps (e.g. variant selection) is inherited.
+      - name: Generate native project
+        if: ${{ inputs.prebuild-command != '' }}
+        shell: bash
+        env:
+          PREBUILD_COMMAND: ${{ inputs.prebuild-command }}
+        run: |
+          set -euo pipefail
+          eval "$PREBUILD_COMMAND"
+          test -f android/gradlew
+
+      # Dependencies and the Gradle wrapper only (not build outputs): they are
+      # what a cold release spends most of its download time on, and they are
+      # safe to share across builds. Caches are written on the default branch
+      # by any run there and read by tag and dispatch runs too.
+      - name: Cache Gradle
+        if: ${{ inputs.gradle-cache }}
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: gradle-${{ runner.os }}-${{ inputs.java-version }}-${{ hashFiles('**/pnpm-lock.yaml') }}
+          restore-keys: |
+            gradle-${{ runner.os }}-${{ inputs.java-version }}-
+
       - name: Setup Java
         uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
         with:
@@ -267,6 +312,17 @@ jobs:
           name: app-release-aab
           path: ${{ inputs.app-directory }}/${{ inputs.aab-path }}
           retention-days: 14
+
+      # A signed APK for sideloaded devices (a kiosk tablet before an EMM or
+      # managed Play is set up).
+      - name: Upload APK artifact
+        if: ${{ inputs.apk-path != '' }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: app-release-apk
+          path: ${{ inputs.app-directory }}/${{ inputs.apk-path }}
+          retention-days: 30
+          if-no-files-found: error
 
       # Keyless: federate GitHub's OIDC token to impersonate the Play publisher SA.
       - name: Authenticate to Google Cloud (WIF)

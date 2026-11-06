@@ -535,9 +535,11 @@ App** so it runs only after a Port approval.
 | Android | `ANDROID_KEYSTORE_BASE64`, `ANDROID_KEYSTORE_PASSWORD`, `ANDROID_KEY_ALIAS`, `ANDROID_KEY_PASSWORD` |
 | iOS submit | `ASC_SUBMIT_ISSUER_ID`, `ASC_SUBMIT_KEY_ID`, `ASC_SUBMIT_PRIVATE_KEY_B64` |
 
-Android release builds are slow and **uncached** — a tag ref can't read a branch's
-Gradle cache, so every release recompiles the RN C++ core, reanimated and worklets
-for each ABI in `reactNativeArchitectures`. Size `build-timeout-minutes` (default
+Android release builds are slow. `gradle-cache` (default on) restores the
+Gradle dependency and wrapper cache keyed on the lockfile; a tag or dispatch run
+reads the default branch's cache, but native compilation still runs every time,
+so each release recompiles the RN C++ core, reanimated and worklets for each ABI
+in `reactNativeArchitectures` (build one ABI where the hardware is known). Size `build-timeout-minutes` (default
 `90`) well above the observed build time: the Play upload is the last step, so a
 build that merely runs long otherwise burns a good AAB. Note GitHub forbids
 `timeout-minutes` on a job that calls a reusable workflow — this input is the only
@@ -573,6 +575,23 @@ jobs:
       bws-token-build: ${{ secrets.BWS_TOKEN_BUILD }}
       npm-token: ${{ secrets.NPM_TOKEN }}
 ```
+
+**Expo (continuous native generation).** An app that does not commit `android/`
+passes `prebuild-command`, which runs in `app-directory` before Gradle. For a
+sideloaded device, also build a signed APK and turn off the Play upload:
+
+```yaml
+    with:
+      prebuild-command: pnpm exec expo prebuild -p android --clean --no-install
+      gradle-command: ./gradlew assembleRelease bundleRelease --no-daemon
+      apk-path: android/app/build/outputs/apk/release/app-release.apk
+      publish: false
+```
+
+The app's config plugin must sign the release build from the canonical env
+NAMEs above (`ANDROID_KEYSTORE_PATH`, set by this workflow, plus the
+password, alias and key password); Expo's generated project otherwise signs
+release with the debug key.
 
 ```yaml
 # .github/workflows/submit-ios.yml  (dispatched by the Port submit action)

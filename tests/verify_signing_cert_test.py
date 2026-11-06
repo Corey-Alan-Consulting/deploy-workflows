@@ -28,6 +28,25 @@ def apksigner_output(*digests):
     )
 
 
+def apksigner_v31_output(digest):
+    # Shape of `apksigner verify --print-certs` when a v3.1 block is present.
+    return "\n".join([
+        f"Signer (minSdkVersion=33, maxSdkVersion=2147483647) certificate SHA-256 digest: {digest}",
+        f"Signer (minSdkVersion=24, maxSdkVersion=32) certificate SHA-256 digest: {digest}",
+        f"Source Stamp Signer certificate SHA-256 digest: {OTHER.replace(':', '').lower()}",
+    ])
+
+
+def apksigner_37_output(digest):
+    # build-tools 37 labels signers by scheme.
+    return "\n".join([
+        "V2 Signer: certificate DN: CN=t",
+        f"V2 Signer: certificate SHA-256 digest: {digest}",
+        f"V3.0 Signer: certificate SHA-256 digest: {digest}",
+        "V3.0 Signer: certificate SHA-1 digest: 00",
+    ])
+
+
 class VerifySigningCertTest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -83,6 +102,28 @@ class VerifySigningCertTest(unittest.TestCase):
         r = self.run_script(apk="app.apk")
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         self.assertIn("APK: signing certificate matches", r.stdout)
+
+    def test_apk_v31_signers(self):
+        self.stub(os.path.join(self.bin, "keytool"), keytool_output(GOOD))
+        self.stub(os.path.join(self.sdk, "build-tools/35.0.0/apksigner"), apksigner_v31_output(GOOD_HEX))
+        r = self.run_script(apk="app.apk")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("APK: signing certificate matches", r.stdout)
+
+    def test_apk_build_tools_37_labels(self):
+        self.stub(os.path.join(self.bin, "keytool"), keytool_output(GOOD))
+        self.stub(os.path.join(self.sdk, "build-tools/37.0.0/apksigner"), apksigner_37_output(GOOD_HEX))
+        r = self.run_script(apk="app.apk")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("APK: signing certificate matches", r.stdout)
+
+    def test_apk_no_signer_lines_prints_output(self):
+        self.stub(os.path.join(self.bin, "keytool"), keytool_output(GOOD))
+        self.stub(os.path.join(self.sdk, "build-tools/35.0.0/apksigner"), "Verifies")
+        r = self.run_script(apk="app.apk")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("Verifies", r.stdout)
+        self.assertIn("::error::APK has no signing certificate", r.stdout)
 
     def test_apk_mismatch(self):
         self.stub(os.path.join(self.bin, "keytool"), keytool_output(GOOD))

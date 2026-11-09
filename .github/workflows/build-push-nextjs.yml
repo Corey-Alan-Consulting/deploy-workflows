@@ -814,7 +814,7 @@ jobs:
           # Pin BuildKit instead of the floating buildx-stable-1 tag so the
           # builder boot is deterministic and not subject to surprise version
           # bumps or Docker Hub tag-resolution flakiness.
-          driver-opts: image=moby/buildkit:v0.34.1
+          driver-opts: image=moby/buildkit:v0.34.2
 
       - name: Determine tags
         id: tags
@@ -931,7 +931,7 @@ jobs:
           # Pin BuildKit instead of the floating buildx-stable-1 tag so the
           # builder boot is deterministic and not subject to surprise version
           # bumps or Docker Hub tag-resolution flakiness.
-          driver-opts: image=moby/buildkit:v0.34.1
+          driver-opts: image=moby/buildkit:v0.34.2
 
       - name: Determine tags
         id: tags

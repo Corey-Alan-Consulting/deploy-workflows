@@ -126,14 +126,22 @@ export const AGG_SCHEMA = {
 // harness writes token files.
 export function agentSettings({ home = '~', runnerTemp } = {}) {
   const deny = [
-    'Bash', 'Edit', 'Write', 'NotebookEdit', 'WebFetch', 'WebSearch', 'Task',
+    'Bash', 'Edit', 'Write', 'NotebookEdit', 'WebFetch', 'WebSearch', 'Task', 'Skill', 'SlashCommand',
     'Read(//proc/**)', 'Read(//sys/**)', 'Read(//etc/**)',
     ...['.ssh', '.config', '.claude', '.npmrc', '.docker', '.gitconfig', '.git-credentials']
       .map((p) => `Read(${home}/${p}/**)`),
     ...['.npmrc', '.gitconfig', '.git-credentials'].map((p) => `Read(${home}/${p})`),
   ];
   if (runnerTemp) deny.push(`Read(/${runnerTemp}/**)`);
-  return { permissions: { allow: ['Read(./**)'], deny } };
+  // The checkout's own .claude/settings.json and .mcp.json are PR content:
+  // their hooks and MCP servers run as processes, outside every tool rule.
+  // session() refuses to load them (--setting-sources user,
+  // --strict-mcp-config); these two make the same refusal from this side.
+  return {
+    disableAllHooks: true,
+    enableAllProjectMcpServers: false,
+    permissions: { allow: ['Read(./**)'], deny },
+  };
 }
 
 const SKIP = [
@@ -207,7 +215,10 @@ function session({ repo, prompt, schema, model, budget, tokenCmd, label, out }) 
     '-p', prompt, '--model', model, '--max-budget-usd', String(budget),
     '--max-turns', '60', '--output-format', 'json', '--json-schema', JSON.stringify(schema),
     '--settings', join(out, 'settings.json'),
-  ], { cwd: repo, encoding: 'utf8', env: agentEnv(process.env), maxBuffer: 64 << 20 });
+    // Without these a PR could add a hook or an MCP server and run code here
+    // (proven against a trap repo: all four fired before, none after).
+    '--setting-sources', 'user', '--strict-mcp-config', '--mcp-config', '{"mcpServers":{}}',
+  ], { cwd: repo, encoding: 'utf8', input: '', env: agentEnv(process.env), maxBuffer: 64 << 20 });
   writeFileSync(join(out, `${label}.raw.json`), r.stdout || '');
   let res = {};
   try { res = JSON.parse(r.stdout); } catch { /* recorded as an empty session */ }

@@ -60,6 +60,13 @@ test('agentSettings fences reads to the checkout and denies every acting tool', 
   }
   assert.ok(s.permissions.deny.includes('Read(//proc/**)'));
   assert.ok(s.permissions.deny.includes('Read(//home/runner/work/_temp/**)'));
+  assert.ok(s.permissions.deny.includes('Skill'));
+});
+
+test('agentSettings refuses hooks and project MCP servers, which run outside every tool rule', () => {
+  const s = agentSettings();
+  assert.equal(s.disableAllHooks, true);
+  assert.equal(s.enableAllProjectMcpServers, false);
 });
 
 const PATCH = `diff --git a/src/tax.ts b/src/tax.ts

@@ -67,6 +67,8 @@ runs:
         ANTHROPIC_SERVICE_ACCOUNT_ID: svac_PLACEHOLDER
         ANTHROPIC_WORKSPACE_ID: wrkspc_PLACEHOLDER
         ANTHROPIC_IDENTITY_TOKEN_FILE: ${{ runner.temp }}/anthropic-identity.jwt
+        # Harness-owned and empty, so the only "user" settings are none.
+        CLAUDE_CONFIG_DIR: ${{ runner.temp }}/claude-config
         BASE: ${{ inputs.base }}
         HEAD: ${{ inputs.head }}
         ANGLES: ${{ inputs.angles }}

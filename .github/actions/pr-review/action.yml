@@ -62,10 +62,10 @@ runs:
       id: review
       shell: bash
       env:
-        ANTHROPIC_FEDERATION_RULE_ID: fdrl_PLACEHOLDER
+        ANTHROPIC_FEDERATION_RULE_ID: fdrl_01XbZebPay4w3BJwGMQ2aVBg
         ANTHROPIC_ORGANIZATION_ID: 2be9142c-408a-457e-94b1-7b37ef7d0c6b
-        ANTHROPIC_SERVICE_ACCOUNT_ID: svac_PLACEHOLDER
-        ANTHROPIC_WORKSPACE_ID: wrkspc_PLACEHOLDER
+        ANTHROPIC_SERVICE_ACCOUNT_ID: svac_01WEyHupowsiBRdENVaKG8kX
+        ANTHROPIC_WORKSPACE_ID: wrkspc_01KQt8jhGxMdc31r3gkCCgoR
         ANTHROPIC_IDENTITY_TOKEN_FILE: ${{ runner.temp }}/anthropic-identity.jwt
         # Harness-owned and empty, so the only "user" settings are none.
         CLAUDE_CONFIG_DIR: ${{ runner.temp }}/claude-config

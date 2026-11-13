@@ -17,3 +17,6 @@ paths:
   .github/workflows/android-release.yml:
     ignore:
       - 'specifying action "\$/[^"]*" in invalid format because ref is missing'
+  .github/workflows/app-pr-review.yml:
+    ignore:
+      - 'specifying action "\$/[^"]*" in invalid format because ref is missing'

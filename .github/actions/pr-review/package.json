@@ -1,0 +1,8 @@
+{
+  "name": "pr-review",
+  "private": true,
+  "description": "Pins the Claude Code CLI the review harness runs, with integrity hashes in the lockfile.",
+  "dependencies": {
+    "@anthropic-ai/claude-code": "2.1.308"
+  }
+}

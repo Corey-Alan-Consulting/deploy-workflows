@@ -80,6 +80,9 @@ jobs:
       # Send-side renderer, upstreamed from capturly so every repo gets a
       # non-empty GitHub Release body rather than just that one.
       - run: node --test .github/actions/backfill-release-body/backfill.test.mjs
+      # PR review harness: parsing, the agent's fence and environment, and
+      # how findings map onto a GitHub review. No model calls.
+      - run: node --test .github/actions/pr-review/review.test.mjs
 
   conformance-rules:
     name: conformance rules

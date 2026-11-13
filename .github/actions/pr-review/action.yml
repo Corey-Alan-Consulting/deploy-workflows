@@ -1,0 +1,120 @@
+name: PR review
+description: >-
+  Advisory AI review of a pull request (framework review-harness): independent
+  read-only passes, an aggregator that discards, then one GitHub review. Keyless:
+  each agent session gets a fresh GitHub OIDC token, exchanged by Claude Code
+  through an Anthropic federation rule. Used by the reusable app-pr-review.yml.
+
+inputs:
+  base:
+    description: Base commit of the PR.
+    required: true
+  head:
+    description: Head commit of the PR (the checkout must be at it).
+    required: true
+  angles:
+    description: >-
+      Comma-separated passes (correctness, checklist, security, reuse,
+      altitude). Repeating one runs it again, blind to the first.
+    required: false
+    default: correctness,correctness,checklist,security
+  model-pass:
+    required: false
+    default: sonnet
+  model-agg:
+    required: false
+    default: opus
+  budget-pass:
+    description: USD cap per pass session.
+    required: false
+    default: '0.75'
+  budget-agg:
+    description: USD cap for the aggregator session.
+    required: false
+    default: '1.25'
+  github-token:
+    description: Token for posting the review (pull-requests:write).
+    required: true
+
+outputs:
+  findings:
+    description: Number of findings that survived aggregation.
+    value: ${{ steps.review.outputs.findings }}
+  cost:
+    description: Model spend for this review in USD.
+    value: ${{ steps.review.outputs.cost }}
+
+runs:
+  using: composite
+  steps:
+    # Version and integrity hashes come from this action's package-lock.json.
+    - name: Install Claude Code
+      shell: bash
+      env:
+        ACTION_DIR: ${{ github.action_path }}
+      run: npm ci --prefix "$ACTION_DIR" --no-fund --no-audit
+
+    # The federation rule CEL-matches job_workflow_ref by prefix
+    # (deploy-workflows/.github/workflows/app-pr-review.yml@, any ref),
+    # repository_owner and event_name == pull_request. All four ids are
+    # non-secret; nothing here rotates.
+    - name: Review
+      id: review
+      shell: bash
+      env:
+        ANTHROPIC_FEDERATION_RULE_ID: fdrl_PLACEHOLDER
+        ANTHROPIC_ORGANIZATION_ID: 2be9142c-408a-457e-94b1-7b37ef7d0c6b
+        ANTHROPIC_SERVICE_ACCOUNT_ID: svac_PLACEHOLDER
+        ANTHROPIC_WORKSPACE_ID: wrkspc_PLACEHOLDER
+        ANTHROPIC_IDENTITY_TOKEN_FILE: ${{ runner.temp }}/anthropic-identity.jwt
+        BASE: ${{ inputs.base }}
+        HEAD: ${{ inputs.head }}
+        ANGLES: ${{ inputs.angles }}
+        MODEL_PASS: ${{ inputs.model-pass }}
+        MODEL_AGG: ${{ inputs.model-agg }}
+        BUDGET_PASS: ${{ inputs.budget-pass }}
+        BUDGET_AGG: ${{ inputs.budget-agg }}
+        OUT: ${{ runner.temp }}/pr-review
+        ACTION_DIR: ${{ github.action_path }}
+      run: |
+        set -euo pipefail
+        if [ -z "${ACTIONS_ID_TOKEN_REQUEST_URL:-}" ]; then
+          echo "::error::No GitHub OIDC. Does the calling workflow grant 'id-token: write'?"
+          exit 1
+        fi
+        # GitHub OIDC tokens carry a single-use jti, so every session needs its
+        # own. Runs in the harness process; review.mjs strips the request vars
+        # from the agent's environment.
+        cat > "$RUNNER_TEMP/mint-identity.sh" <<'MINT'
+        set -euo pipefail
+        curl -sS -H "Authorization: Bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+          "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=https://api.anthropic.com" \
+          | jq -r '.value // empty' > "$ANTHROPIC_IDENTITY_TOKEN_FILE"
+        [ -s "$ANTHROPIC_IDENTITY_TOKEN_FILE" ]
+        MINT
+        export PATH="$ACTION_DIR/node_modules/.bin:$PATH"
+        node "$ACTION_DIR/review.mjs" --repo . --base "$BASE" --head "$HEAD" --out "$OUT" \
+          --context "$RUNNER_TEMP/pr-context.md" --angles "$ANGLES" \
+          --model-pass "$MODEL_PASS" --model-agg "$MODEL_AGG" \
+          --budget-pass "$BUDGET_PASS" --budget-agg "$BUDGET_AGG" \
+          --token-cmd "bash $RUNNER_TEMP/mint-identity.sh"
+        jq -r '"findings=\(.findings|length)\ncost=\(.costUsd)"' "$OUT/findings.json" >> "$GITHUB_OUTPUT"
+
+    - name: Keep the findings
+      if: always()
+      uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+      with:
+        name: pr-review
+        path: ${{ runner.temp }}/pr-review
+        if-no-files-found: ignore
+        retention-days: 30
+
+    - name: Post review
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github-token }}
+        REPO: ${{ github.repository }}
+        PR: ${{ github.event.pull_request.number }}
+        HEAD_SHA: ${{ inputs.head }}
+        ACTION_DIR: ${{ github.action_path }}
+      run: node "$ACTION_DIR/post.mjs" --findings "$RUNNER_TEMP/pr-review/findings.json" --patch .review/diff.patch

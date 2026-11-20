@@ -83,7 +83,7 @@ jobs:
           secrets: ${{ inputs.port-secret-ids }}
 
       - name: Sync store state to Port
-        uses: Corey-Alan-Consulting/deploy-workflows/.github/actions/store-state@v1
+        uses: Corey-Alan-Consulting/deploy-workflows/.github/actions/store-state@7dc492ac6f66d1af9bb58d8caf3a13f769facf50 # v1
         with:
           apps-json: ${{ inputs.apps-json }}
           asc-issuer-id: ${{ env.ASC_SUBMIT_ISSUER_ID }}

@@ -103,7 +103,7 @@ jobs:
     environment: ${{ inputs.turbo-cache-environment }}
     steps:
       - name: Build scaffold (checkout, secrets, install, build, prebuild)
-        uses: Corey-Alan-Consulting/deploy-workflows/.github/actions/desktop-build-setup@v1
+        uses: Corey-Alan-Consulting/deploy-workflows/.github/actions/desktop-build-setup@7dc492ac6f66d1af9bb58d8caf3a13f769facf50 # v1
         with:
           node-version: ${{ inputs.node-version }}
           build-command: ${{ inputs.build-command }}

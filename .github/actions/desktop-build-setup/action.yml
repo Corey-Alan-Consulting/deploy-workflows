@@ -142,7 +142,7 @@ runs:
 
     # Trusted build: read+write the shared remote cache (no-op without a token).
     - name: Setup turbo remote cache
-      uses: Corey-Alan-Consulting/deploy-workflows/.github/actions/setup-turbo-cache@v1
+      uses: Corey-Alan-Consulting/deploy-workflows/.github/actions/setup-turbo-cache@7dc492ac6f66d1af9bb58d8caf3a13f769facf50 # v1
       with:
         turbo_api: ${{ inputs.turbo-api }}
         turbo_team: ${{ inputs.turbo-team }}

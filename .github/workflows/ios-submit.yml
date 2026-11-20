@@ -84,7 +84,7 @@ jobs:
           secrets: ${{ inputs.signing-secret-ids }}
 
       - name: Submit to App Store
-        uses: Corey-Alan-Consulting/deploy-workflows/.github/actions/asc-submit@v1
+        uses: Corey-Alan-Consulting/deploy-workflows/.github/actions/asc-submit@7dc492ac6f66d1af9bb58d8caf3a13f769facf50 # v1
         with:
           app-id: ${{ inputs.app-id }}
           version: ${{ inputs.version }}

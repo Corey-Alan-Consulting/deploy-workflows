@@ -89,7 +89,7 @@ jobs:
           service_account: ${{ inputs.wif-service-account }}
 
       - name: Promote closed track → production
-        uses: Corey-Alan-Consulting/deploy-workflows/.github/actions/play-publish@v1
+        uses: Corey-Alan-Consulting/deploy-workflows/.github/actions/play-publish@7dc492ac6f66d1af9bb58d8caf3a13f769facf50 # v1
         with:
           mode: promote
           package: ${{ inputs.package-name }}

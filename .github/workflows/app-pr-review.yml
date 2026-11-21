@@ -1,0 +1,113 @@
+# Advisory AI review for app PRs (framework .claude/skills/review-harness).
+#
+# Call it as its own job AFTER the PR checks, so a red gate is answered by the
+# gate and never re-found by a paid pass:
+#
+#   review:
+#     needs: checks
+#     permissions:
+#       contents: read
+#       pull-requests: write # post the review
+#       id-token: write      # keyless Anthropic auth
+#     uses: Corey-Alan-Consulting/deploy-workflows/.github/workflows/app-pr-review.yml@<sha> # vX.Y.Z
+#
+# A called workflow's permissions are capped by the caller's, so the caller
+# must grant all three or the run is a startup_failure with no logs.
+#
+# Trust: PR content is untrusted input to the model. The review sessions get a
+# read-only, checkout-fenced toolset and no GitHub token; only the post step,
+# which runs no model, can write to the PR. Fork PRs never reach this (no OIDC).
+
+name: App PR review
+
+on:
+  workflow_call:
+    inputs:
+      angles:
+        description: >-
+          Comma-separated passes. Default suits most services; add reuse,altitude
+          for high-criticality ones.
+        required: false
+        type: string
+        default: correctness,correctness,checklist,security
+      model-pass:
+        required: false
+        type: string
+        default: sonnet
+      model-agg:
+        required: false
+        type: string
+        default: opus
+      max-changed-lines:
+        description: Skip PRs larger than this; past it a review costs more than it finds.
+        required: false
+        type: number
+        default: 6000
+
+permissions: {}
+
+jobs:
+  review:
+    name: AI review (advisory)
+    # Drafts, bots (Renovate, release PRs) and forks are not reviewed; the
+    # `skip-ai-review` label opts a PR out.
+    if: >-
+      github.event_name == 'pull_request'
+      && !github.event.pull_request.draft
+      && github.event.pull_request.user.type != 'Bot'
+      && github.event.pull_request.head.repo.full_name == github.repository
+      && !contains(github.event.pull_request.labels.*.name, 'skip-ai-review')
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      pull-requests: write
+      id-token: write
+    concurrency:
+      group: pr-review-${{ github.event.pull_request.number }}
+      cancel-in-progress: true
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Size and context
+        id: size
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+          MAX: ${{ inputs.max-changed-lines }}
+          TITLE: ${{ github.event.pull_request.title }}
+          BODY: ${{ github.event.pull_request.body }}
+        run: |
+          set -euo pipefail
+          CHANGED=$(git diff --numstat "$BASE...$HEAD" -- . ':!pnpm-lock.yaml' | awk '{s+=$1+$2} END {print s+0}')
+          echo "changed=$CHANGED" >> "$GITHUB_OUTPUT"
+          if [ "$CHANGED" -gt "$MAX" ]; then
+            echo "::notice::$CHANGED changed lines > $MAX: skipping the AI review."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          fi
+          printf '# %s\n\n%s\n' "$TITLE" "$BODY" > "$RUNNER_TEMP/pr-context.md"
+
+      - name: Review
+        if: steps.size.outputs.skip != 'true'
+        id: review
+        uses: $/.github/actions/pr-review
+        with:
+          base: ${{ github.event.pull_request.base.sha }}
+          head: ${{ github.event.pull_request.head.sha }}
+          angles: ${{ inputs.angles }}
+          model-pass: ${{ inputs.model-pass }}
+          model-agg: ${{ inputs.model-agg }}
+          github-token: ${{ github.token }}
+
+      - name: Summary
+        if: always() && steps.size.outputs.skip != 'true'
+        env:
+          FINDINGS: ${{ steps.review.outputs.findings }}
+          COST: ${{ steps.review.outputs.cost }}
+          CHANGED: ${{ steps.size.outputs.changed }}
+        run: |
+          echo "AI review: ${FINDINGS:-?} findings over $CHANGED changed lines, \$${COST:-?}" >> "$GITHUB_STEP_SUMMARY"

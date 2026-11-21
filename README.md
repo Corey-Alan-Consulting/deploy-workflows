@@ -756,6 +756,41 @@ costs no extra billed minute.
 Turn it on in the same PR that reformats the repo, and list that formatting
 commit in `.git-blame-ignore-revs` so `git blame` skips it.
 
+## Reusable Workflow — app-pr-review.yml (pilot)
+
+An **advisory** AI review for app PRs, built on the framework's
+`review-harness` skill. It runs independent passes, each blind to the others
+(by default `correctness` twice, then `checklist` and `security`), and feeds
+them into one aggregator whose job is to drop findings. Survivors are
+classified and posted as one GitHub review. The review never blocks a merge.
+Call it as a job that `needs:` the PR checks, so a red gate is never re-found
+by a paid pass. The caller contract is in the workflow header.
+
+**Trust boundary.** PR content is untrusted model input.
+- Review sessions get `Read` fenced to the checkout and nothing else: no Bash,
+  no web, no GitHub token. The fence is tested in `review.test.mjs` and was
+  probed live.
+- The agent's environment never carries the OIDC request variables.
+- `post.mjs` runs no model, and is the only step holding `pull-requests: write`.
+
+**Keyless auth.** This uses the same pattern as `release-announce.yml`. Its
+own Anthropic federation rule CEL-matches `job_workflow_ref` by prefix
+(`…/app-pr-review.yml@`), plus `repository_owner` and `event_name ==
+"pull_request"`. Each session gets a freshly minted GitHub OIDC token, because
+the `jti` claim is single-use.
+
+**Replay evaluation (2026-11-13).** The harness was replayed on 10 historical
+PRs whose bugs were later fixed, at $10.89 total and about $1.10 per PR. It
+confirmed known defects including:
+- the sitemap prerender (rb#34 → #38);
+- the root-package changeset incident (rb#34 → #40);
+- cancelled orders rewritten to REFUNDED (rb#99 → #101);
+- the refund/status race (rb#99 → #158).
+
+It also found a live open redirect (gatherbee#130). It missed defects that
+needed runtime or production data (Shippo rate ids, Stripe Tax registration,
+contrast tokens, prod row shapes). Those belong to QA, not review.
+
 ## Org conformance
 
 `conformance.yml` runs as the required **Workflow conformance** check on app
